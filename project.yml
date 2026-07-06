@@ -1,0 +1,29 @@
+name: BlackmagicControl
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  bundleIdPrefix: com.local
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+targets:
+  BlackmagicControl:
+    type: application
+    platform: iOS
+    sources:
+      - BlackmagicControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.BlackmagicControl
+        INFOPLIST_FILE: BlackmagicControl/App/Info.plist
+        TARGETED_DEVICE_FAMILY: 2
+        SUPPORTS_MACCATALYST: false
+    info:
+      path: BlackmagicControl/App/Info.plist
+  BlackmagicControlTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - BlackmagicControlTests
+    dependencies:
+      - target: BlackmagicControl
