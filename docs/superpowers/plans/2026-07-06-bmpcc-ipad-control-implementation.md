@@ -1753,9 +1753,12 @@ Cable or hub:
 
 ## REST Over USB-C
 
-- Safari on iPad reaches `http://192.168.7.1/control/documentation.html`.
-- Safari on iPad reaches `http://192.168.6.1/control/documentation.html`.
-- Safari on iPad reaches `http://10.0.0.1/control/documentation.html`.
+- With UVC preview active, try candidate REST documentation URLs and record which one works.
+- Candidate: `http://192.168.7.1/control/documentation.html`.
+- Candidate: `http://192.168.6.1/control/documentation.html`.
+- Candidate: `http://10.0.0.1/control/documentation.html`.
+- Working candidate IP:
+- REST reachability passes if at least one candidate loads `/control/documentation.html`.
 - App shows REST as active transport.
 - App can refresh camera state while preview is active.
 
@@ -1767,6 +1770,11 @@ Cable or hub:
 - Shutter changes.
 - White balance changes.
 - Tint changes.
+- Timecode appears/updates.
+- Auto white balance works.
+- Focus changes when supported.
+- Autofocus triggers when supported.
+- Iris/aperture changes when supported.
 - Battery/power status appears.
 - Media remaining time appears.
 
@@ -1778,6 +1786,7 @@ Cable or hub:
 - Record starts through BLE.
 - Record stops through BLE.
 - ISO changes through BLE.
+- Shutter changes through BLE.
 - White balance changes through BLE.
 
 ## Decision
