@@ -7,6 +7,7 @@ enum BleCameraControlError: Error, Equatable {
     case cameraControlNotReady
     case writeNotSupported
     case cannotWriteWithoutResponse
+    case invalidShutterValue(String)
 }
 
 final class BleCameraControlClient: NSObject, CameraControlClient {
@@ -118,7 +119,7 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
     }
 
     static func makeRecordTransportModePacket(recording: Bool) throws -> BlackmagicCcuPacket {
-        try BlackmagicCcuPacket.changeConfiguration(
+        return try BlackmagicCcuPacket.changeConfiguration(
             destination: destination,
             category: 10,
             parameter: 1,
@@ -129,7 +130,7 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
     }
 
     static func makeISOPacket(_ iso: Int) throws -> BlackmagicCcuPacket {
-        try BlackmagicCcuPacket.changeConfiguration(
+        return try BlackmagicCcuPacket.changeConfiguration(
             destination: destination,
             category: 1,
             parameter: 14,
@@ -140,13 +141,15 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
     }
 
     static func makeShutterAnglePacket(_ shutter: String) throws -> BlackmagicCcuPacket {
-        try BlackmagicCcuPacket.changeConfiguration(
+        let shutterAngle = try shutterAngleHundredths(shutter)
+
+        return try BlackmagicCcuPacket.changeConfiguration(
             destination: destination,
             category: 1,
             parameter: 11,
             dataType: .int32,
             operation: .assign,
-            payload: BlackmagicCcuPacket.int32Payload(shutterAngleHundredths(shutter))
+            payload: BlackmagicCcuPacket.int32Payload(shutterAngle)
         )
     }
 
@@ -278,10 +281,26 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
         var state = CameraState()
         state.controlTransport = transport
         state.connectionStatus = status
+
+        if transport == .ble {
+            markBleCommandFeaturesAvailable(in: &state)
+        }
+
         return state
     }
 
-    private static func shutterAngleHundredths(_ shutter: String) -> Int32 {
+    private static func markBleCommandFeaturesAvailable(in state: inout CameraState) {
+        state.isRecording = CameraValue(value: nil, availability: .available(source: .ble))
+        state.iso = CameraValue(value: nil, availability: .available(source: .ble))
+        state.shutter = CameraValue(value: nil, availability: .available(source: .ble))
+        state.whiteBalance = CameraValue(value: nil, availability: .available(source: .ble))
+        state.tint = CameraValue(value: nil, availability: .available(source: .ble))
+        state.iris = CameraValue(value: nil, availability: .available(source: .ble))
+        state.focus = CameraValue(value: nil, availability: .available(source: .ble))
+        state.canAutoFocus = CameraValue(value: true, availability: .available(source: .ble))
+    }
+
+    private static func shutterAngleHundredths(_ shutter: String) throws -> Int32 {
         let normalized = shutter
             .replacingOccurrences(of: "degrees", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "degree", with: "", options: .caseInsensitive)
@@ -290,7 +309,7 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard let angle = Double(normalized), angle.isFinite else {
-            return 18_000
+            throw BleCameraControlError.invalidShutterValue(shutter)
         }
 
         let scaled = (angle * 100).rounded()

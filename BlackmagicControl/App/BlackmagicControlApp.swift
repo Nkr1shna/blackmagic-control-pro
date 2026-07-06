@@ -2,13 +2,11 @@ import SwiftUI
 
 @main
 struct BlackmagicControlApp: App {
+    @StateObject private var container = AppContainer()
+
     var body: some Scene {
         WindowGroup {
-            Text("Blackmagic Control")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
+            MonitorView(store: container.store, previewModel: container.previewModel)
         }
     }
 }

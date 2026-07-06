@@ -13,7 +13,7 @@ final class BleCameraControlClientTests: XCTestCase {
             [255, 8, 0, 0, 1, 14, 3, 0]
         )
         XCTAssertEqual(
-            Array(try BleCameraControlClient.makeShutterAnglePacket("bad input").bytes),
+            Array(try BleCameraControlClient.makeShutterAnglePacket("180").bytes),
             [255, 8, 0, 0, 1, 11, 3, 0, 0x50, 0x46, 0, 0]
         )
         XCTAssertEqual(
@@ -36,6 +36,38 @@ final class BleCameraControlClientTests: XCTestCase {
             Array(try BleCameraControlClient.makeAutoFocusPacket().bytes),
             [255, 4, 0, 0, 0, 1, 0, 0]
         )
+    }
+
+    func testInvalidShutterTextThrowsWithoutBuildingFallbackPacket() {
+        XCTAssertThrowsError(
+            try BleCameraControlClient.makeShutterAnglePacket("bad input")
+        ) { error in
+            XCTAssertEqual(error as? BleCameraControlError, .invalidShutterValue("bad input"))
+        }
+    }
+
+    func testBleStatesExposeCommandAvailabilityWithoutFakeCurrentValues() {
+        let scanning = BleCameraControlClient.makeState(
+            centralState: .poweredOn,
+            peripheralState: nil,
+            isScanning: true
+        )
+
+        XCTAssertTrue(scanning.isRecording.isAvailable)
+        XCTAssertNil(scanning.isRecording.value)
+        XCTAssertTrue(scanning.iso.isAvailable)
+        XCTAssertNil(scanning.iso.value)
+        XCTAssertTrue(scanning.shutter.isAvailable)
+        XCTAssertNil(scanning.shutter.value)
+        XCTAssertTrue(scanning.whiteBalance.isAvailable)
+        XCTAssertNil(scanning.whiteBalance.value)
+        XCTAssertTrue(scanning.tint.isAvailable)
+        XCTAssertNil(scanning.tint.value)
+        XCTAssertTrue(scanning.focus.isAvailable)
+        XCTAssertNil(scanning.focus.value)
+        XCTAssertTrue(scanning.iris.isAvailable)
+        XCTAssertNil(scanning.iris.value)
+        XCTAssertEqual(scanning.canAutoFocus.value, true)
     }
 
     func testBluetoothStateMappingDoesNotReportScanningWhenUnavailable() {
