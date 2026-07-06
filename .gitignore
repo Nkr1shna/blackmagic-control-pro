@@ -3,6 +3,7 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/
+.worktrees/
 *.xcuserstate
 *.moved-aside
 .DS_Store
