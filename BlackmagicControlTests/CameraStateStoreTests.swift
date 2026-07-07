@@ -41,6 +41,41 @@ final class CameraStateStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testBleStateCallbackUpdatesStoreOnlyWhenBleClientIsActive() async {
+        let bleReporter = FakeBleStateReporter()
+        let bleClient = FakeCameraControlClient(transport: .ble, state: Self.state(transport: .degraded, status: "BLE scanning"))
+        let store = CameraStateStore(
+            restDiscovery: FakeRestDiscovery(endpoint: nil),
+            bleClient: bleClient,
+            bleStateReporter: bleReporter,
+            restClientFactory: { _ in XCTFail("REST client should not be created"); return bleClient }
+        )
+
+        await store.connect()
+        bleReporter.emit(Self.state(transport: .ble, status: "BLE ready"))
+        await yieldToMainActorTasks()
+
+        XCTAssertEqual(store.state.controlTransport, .ble)
+        XCTAssertEqual(store.state.connectionStatus, "BLE ready")
+
+        let restClient = FakeCameraControlClient(transport: .rest, state: Self.state(transport: .rest, status: "REST"))
+        let restStore = CameraStateStore(
+            restDiscovery: FakeRestDiscovery(endpoint: RestCameraEndpoint(baseURL: URL(string: "http://camera.local")!)),
+            bleClient: bleClient,
+            bleStateReporter: bleReporter,
+            restClientFactory: { _ in restClient },
+            restEventStreamFactory: { _ in FakeRestEventStream() }
+        )
+
+        await restStore.connect()
+        bleReporter.emit(Self.state(transport: .ble, status: "Ignored BLE"))
+        await yieldToMainActorTasks()
+
+        XCTAssertEqual(restStore.state.controlTransport, .rest)
+        XCTAssertEqual(restStore.state.connectionStatus, "REST")
+    }
+
+    @MainActor
     func testConnectFallsBackToBleAndKeepsRestErrorWhenRestConnectFails() async {
         let restClient = FakeCameraControlClient(
             transport: .rest,
@@ -62,6 +97,29 @@ final class CameraStateStoreTests: XCTestCase {
         XCTAssertEqual(bleConnectCallCount, 1)
         XCTAssertEqual(store.state.controlTransport, .ble)
         XCTAssertEqual(store.state.errors.map(\.message), ["REST unavailable"])
+    }
+
+    @MainActor
+    func testRestEventRefreshesActiveRestClient() async {
+        let restClient = FakeCameraControlClient(transport: .rest, state: Self.state(transport: .rest, status: "REST"))
+        let eventStream = FakeRestEventStream()
+        let store = CameraStateStore(
+            restDiscovery: FakeRestDiscovery(endpoint: RestCameraEndpoint(baseURL: URL(string: "http://camera.local")!)),
+            bleClient: FakeCameraControlClient(transport: .ble, state: Self.state(transport: .ble, status: "BLE")),
+            restClientFactory: { _ in restClient },
+            restEventStreamFactory: { _ in eventStream }
+        )
+
+        await store.connect()
+        eventStream.emit(RestEventMessage(
+            data: RestEventMessage.Payload(action: "update", property: "/video/iso"),
+            type: "property"
+        ))
+        await waitForCall("refreshState", on: restClient)
+
+        let calls = await restClient.callsSnapshot()
+        XCTAssertEqual(eventStream.connectCallCount, 1)
+        XCTAssertEqual(calls, ["connect", "refreshState"])
     }
 
     @MainActor
@@ -181,6 +239,22 @@ final class CameraStateStoreTests: XCTestCase {
         state.connectionStatus = status
         return state
     }
+
+    @MainActor
+    private func yieldToMainActorTasks() async {
+        await Task.yield()
+        await Task.yield()
+    }
+
+    @MainActor
+    private func waitForCall(_ call: String, on client: FakeCameraControlClient) async {
+        for _ in 0..<20 {
+            if await client.callCount(call) > 0 {
+                return
+            }
+            await Task.yield()
+        }
+    }
 }
 
 private struct TestError: LocalizedError {
@@ -196,6 +270,34 @@ private struct FakeRestDiscovery: CameraStateStoreRestDiscovery {
 
     func discover() async -> RestCameraEndpoint? {
         endpoint
+    }
+}
+
+private final class FakeRestEventStream: CameraStateStoreRestEventStream {
+    private(set) var connectCallCount = 0
+    private(set) var disconnectCallCount = 0
+    private var onEvent: ((RestEventMessage) -> Void)?
+
+    func connect(onEvent: @escaping (RestEventMessage) -> Void) {
+        connectCallCount += 1
+        self.onEvent = onEvent
+    }
+
+    func disconnect() {
+        disconnectCallCount += 1
+        onEvent = nil
+    }
+
+    func emit(_ message: RestEventMessage) {
+        onEvent?(message)
+    }
+}
+
+private final class FakeBleStateReporter: BleCameraStateReporting {
+    var onStateChange: ((CameraState) -> Void)?
+
+    func emit(_ state: CameraState) {
+        onStateChange?(state)
     }
 }
 

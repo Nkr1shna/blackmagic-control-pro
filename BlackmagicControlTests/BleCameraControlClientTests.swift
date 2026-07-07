@@ -46,35 +46,72 @@ final class BleCameraControlClientTests: XCTestCase {
         }
     }
 
-    func testBleStatesExposeCommandAvailabilityWithoutFakeCurrentValues() {
+    func testBleStatesExposeCommandAvailabilityOnlyWhenControlCharacteristicIsReady() {
         let scanning = BleCameraControlClient.makeState(
             centralState: .poweredOn,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
 
-        XCTAssertTrue(scanning.isRecording.isAvailable)
+        XCTAssertEqual(scanning.controlTransport, .degraded)
+        XCTAssertFalse(scanning.isRecording.isAvailable)
         XCTAssertNil(scanning.isRecording.value)
-        XCTAssertTrue(scanning.iso.isAvailable)
+        XCTAssertFalse(scanning.iso.isAvailable)
         XCTAssertNil(scanning.iso.value)
-        XCTAssertTrue(scanning.shutter.isAvailable)
+        XCTAssertFalse(scanning.shutter.isAvailable)
         XCTAssertNil(scanning.shutter.value)
-        XCTAssertTrue(scanning.whiteBalance.isAvailable)
+        XCTAssertFalse(scanning.whiteBalance.isAvailable)
         XCTAssertNil(scanning.whiteBalance.value)
-        XCTAssertTrue(scanning.tint.isAvailable)
+        XCTAssertFalse(scanning.tint.isAvailable)
         XCTAssertNil(scanning.tint.value)
-        XCTAssertTrue(scanning.focus.isAvailable)
+        XCTAssertFalse(scanning.focus.isAvailable)
         XCTAssertNil(scanning.focus.value)
-        XCTAssertTrue(scanning.iris.isAvailable)
+        XCTAssertFalse(scanning.iris.isAvailable)
         XCTAssertNil(scanning.iris.value)
-        XCTAssertEqual(scanning.canAutoFocus.value, true)
+
+        let connectedWithoutControl = BleCameraControlClient.makeState(
+            centralState: .poweredOn,
+            peripheralState: .connected,
+            isScanning: false,
+            isCameraControlReady: false
+        )
+
+        XCTAssertEqual(connectedWithoutControl.controlTransport, .degraded)
+        XCTAssertFalse(connectedWithoutControl.isRecording.isAvailable)
+        XCTAssertEqual(connectedWithoutControl.connectionStatus, "BLE connected, waiting for control")
+
+        let controlReady = BleCameraControlClient.makeState(
+            centralState: .poweredOn,
+            peripheralState: .connected,
+            isScanning: false,
+            isCameraControlReady: true
+        )
+
+        XCTAssertEqual(controlReady.controlTransport, .ble)
+        XCTAssertTrue(controlReady.isRecording.isAvailable)
+        XCTAssertNil(controlReady.isRecording.value)
+        XCTAssertTrue(controlReady.iso.isAvailable)
+        XCTAssertNil(controlReady.iso.value)
+        XCTAssertTrue(controlReady.shutter.isAvailable)
+        XCTAssertNil(controlReady.shutter.value)
+        XCTAssertTrue(controlReady.whiteBalance.isAvailable)
+        XCTAssertNil(controlReady.whiteBalance.value)
+        XCTAssertTrue(controlReady.tint.isAvailable)
+        XCTAssertNil(controlReady.tint.value)
+        XCTAssertTrue(controlReady.focus.isAvailable)
+        XCTAssertNil(controlReady.focus.value)
+        XCTAssertTrue(controlReady.iris.isAvailable)
+        XCTAssertNil(controlReady.iris.value)
+        XCTAssertEqual(controlReady.canAutoFocus.value, true)
     }
 
     func testBluetoothStateMappingDoesNotReportScanningWhenUnavailable() {
         let poweredOff = BleCameraControlClient.makeState(
             centralState: .poweredOff,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
         XCTAssertEqual(poweredOff.controlTransport, .disconnected)
         XCTAssertEqual(poweredOff.connectionStatus, "BLE powered off")
@@ -82,7 +119,8 @@ final class BleCameraControlClientTests: XCTestCase {
         let unsupported = BleCameraControlClient.makeState(
             centralState: .unsupported,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
         XCTAssertEqual(unsupported.controlTransport, .disconnected)
         XCTAssertEqual(unsupported.connectionStatus, "BLE unsupported")
@@ -90,7 +128,8 @@ final class BleCameraControlClientTests: XCTestCase {
         let unauthorized = BleCameraControlClient.makeState(
             centralState: .unauthorized,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
         XCTAssertEqual(unauthorized.controlTransport, .disconnected)
         XCTAssertEqual(unauthorized.connectionStatus, "BLE unauthorized")
@@ -98,7 +137,8 @@ final class BleCameraControlClientTests: XCTestCase {
         let resetting = BleCameraControlClient.makeState(
             centralState: .resetting,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
         XCTAssertEqual(resetting.controlTransport, .disconnected)
         XCTAssertEqual(resetting.connectionStatus, "BLE resetting")
@@ -106,7 +146,8 @@ final class BleCameraControlClientTests: XCTestCase {
         let unknown = BleCameraControlClient.makeState(
             centralState: .unknown,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
         XCTAssertEqual(unknown.controlTransport, .disconnected)
         XCTAssertEqual(unknown.connectionStatus, "BLE unavailable")
@@ -114,9 +155,10 @@ final class BleCameraControlClientTests: XCTestCase {
         let scanning = BleCameraControlClient.makeState(
             centralState: .poweredOn,
             peripheralState: nil,
-            isScanning: true
+            isScanning: true,
+            isCameraControlReady: false
         )
-        XCTAssertEqual(scanning.controlTransport, .ble)
+        XCTAssertEqual(scanning.controlTransport, .degraded)
         XCTAssertEqual(scanning.connectionStatus, "BLE scanning")
     }
 

@@ -13,14 +13,33 @@ struct RestEventMessage: Decodable, Equatable {
 protocol RestWebSocketTask: AnyObject {
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    func send(
+        _ message: URLSessionWebSocketTask.Message,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
     func receive(
-        completionHandler: @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void
+        completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void
     )
 }
 
 extension URLSessionWebSocketTask: RestWebSocketTask {}
 
 final class RestEventStream {
+    static let coreProperties = [
+        "/transports/0/record",
+        "/transports/0/timecode",
+        "/media/workingset",
+        "/media/active",
+        "/camera/power",
+        "/video/iso",
+        "/video/shutter",
+        "/video/whiteBalance",
+        "/video/whiteBalanceTint",
+        "/lens/iris",
+        "/lens/focus",
+        "/lens/focus/description"
+    ]
+
     private let baseURL: URL
     private let urlSession: URLSession
     private let webSocketTaskFactory: ((URL) -> RestWebSocketTask)?
@@ -40,7 +59,8 @@ final class RestEventStream {
         disconnect()
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.scheme = webSocketScheme(for: components?.scheme)
+        let scheme = webSocketScheme(for: components?.scheme)
+        components?.scheme = scheme
         components?.path = "/control/api/v1/event/websocket"
 
         guard let webSocketURL = components?.url else {
@@ -50,6 +70,7 @@ final class RestEventStream {
         let task = webSocketTaskFactory?(webSocketURL) ?? urlSession.webSocketTask(with: webSocketURL)
         webSocketTask = task
         task.resume()
+        sendCorePropertySubscription(on: task)
         receive(onEvent: onEvent)
     }
 
@@ -88,6 +109,29 @@ final class RestEventStream {
         }
     }
 
+    private func sendCorePropertySubscription(on task: RestWebSocketTask) {
+        let message = RestEventSubscribeMessage(
+            data: RestEventSubscribeMessage.Payload(
+                action: "subscribe",
+                properties: Self.coreProperties
+            ),
+            type: "request"
+        )
+
+        guard let data = try? JSONEncoder().encode(message),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        task.send(.string(json)) { [weak self, weak task] error in
+            guard let self, let task, self.webSocketTask === task, error != nil else {
+                return
+            }
+
+            self.webSocketTask = nil
+        }
+    }
+
     private func webSocketScheme(for scheme: String?) -> String? {
         switch scheme {
         case "http":
@@ -98,4 +142,14 @@ final class RestEventStream {
             return scheme
         }
     }
+}
+
+private struct RestEventSubscribeMessage: Encodable {
+    struct Payload: Encodable {
+        let action: String
+        let properties: [String]
+    }
+
+    let data: Payload
+    let type: String
 }

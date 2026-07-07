@@ -12,6 +12,7 @@ enum BleCameraControlError: Error, Equatable {
 
 final class BleCameraControlClient: NSObject, CameraControlClient {
     let transport: CameraControlTransport = .ble
+    var onStateChange: ((CameraState) -> Void)?
 
     private static let destination: UInt8 = 255
 
@@ -40,11 +41,13 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
             self.outgoingCameraControlCharacteristic = nil
 
             guard let peripheral = self.peripheral else {
+                self.publishStateChange()
                 return
             }
 
             self.centralManager?.cancelPeripheralConnection(peripheral)
             self.peripheral = nil
+            self.publishStateChange()
         }
     }
 
@@ -215,7 +218,8 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
     static func makeState(
         centralState: CBManagerState?,
         peripheralState: CBPeripheralState?,
-        isScanning: Bool
+        isScanning: Bool,
+        isCameraControlReady: Bool
     ) -> CameraState {
         guard let centralState else {
             return state(transport: .disconnected, status: "BLE unavailable")
@@ -223,14 +227,21 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
 
         switch centralState {
         case .poweredOn:
+            if peripheralState == .connected, isCameraControlReady {
+                return state(
+                    transport: .ble,
+                    status: "BLE connected",
+                    isCameraControlReady: true
+                )
+            }
             if peripheralState == .connected {
-                return state(transport: .ble, status: "BLE connected")
+                return state(transport: .degraded, status: "BLE connected, waiting for control")
             }
             if peripheralState == .connecting {
-                return state(transport: .ble, status: "BLE connecting")
+                return state(transport: .degraded, status: "BLE connecting")
             }
             if isScanning {
-                return state(transport: .ble, status: "BLE scanning")
+                return state(transport: .degraded, status: "BLE scanning")
             }
             return state(transport: .disconnected, status: "BLE disconnected")
         case .poweredOff:
@@ -277,12 +288,16 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
         throw BleCameraControlError.writeNotSupported
     }
 
-    private static func state(transport: CameraControlTransport, status: String) -> CameraState {
+    private static func state(
+        transport: CameraControlTransport,
+        status: String,
+        isCameraControlReady: Bool = false
+    ) -> CameraState {
         var state = CameraState()
         state.controlTransport = transport
         state.connectionStatus = status
 
-        if transport == .ble {
+        if transport == .ble, isCameraControlReady {
             markBleCommandFeaturesAvailable(in: &state)
         }
 
@@ -355,8 +370,25 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
         Self.makeState(
             centralState: centralManager?.state,
             peripheralState: peripheral?.state,
-            isScanning: centralManager?.isScanning == true
+            isScanning: centralManager?.isScanning == true,
+            isCameraControlReady: isCameraControlReady
         )
+    }
+
+    private var isCameraControlReady: Bool {
+        guard centralManager?.state == .poweredOn,
+              peripheral?.state == .connected,
+              let properties = outgoingCameraControlCharacteristic?.properties else {
+            return false
+        }
+
+        return Self.isCameraControlCharacteristicWriteCapable(properties)
+    }
+
+    private static func isCameraControlCharacteristicWriteCapable(
+        _ properties: CBCharacteristicProperties
+    ) -> Bool {
+        properties.contains(.write) || properties.contains(.writeWithoutResponse)
     }
 
     private func scanForCamera() {
@@ -368,6 +400,10 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
             withServices: [BlackmagicBleConstants.cameraService],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
+    }
+
+    private func publishStateChange() {
+        onStateChange?(currentState())
     }
 
     private func write(_ packet: BlackmagicCcuPacket) throws {
@@ -391,11 +427,14 @@ final class BleCameraControlClient: NSObject, CameraControlClient {
 
 extension BleCameraControlClient: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        guard central.state == .poweredOn else {
-            return
+        if central.state == .poweredOn {
+            scanForCamera()
+        } else {
+            peripheral = nil
+            outgoingCameraControlCharacteristic = nil
         }
 
-        scanForCamera()
+        publishStateChange()
     }
 
     func centralManager(
@@ -412,6 +451,7 @@ extension BleCameraControlClient: CBCentralManagerDelegate {
         peripheral = discoveredPeripheral
         discoveredPeripheral.delegate = self
         central.connect(discoveredPeripheral)
+        publishStateChange()
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -420,12 +460,14 @@ extension BleCameraControlClient: CBCentralManagerDelegate {
             BlackmagicBleConstants.cameraService,
             BlackmagicBleConstants.deviceInformationService
         ])
+        publishStateChange()
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         if self.peripheral === peripheral {
             self.peripheral = nil
             outgoingCameraControlCharacteristic = nil
+            publishStateChange()
         }
     }
 
@@ -433,6 +475,7 @@ extension BleCameraControlClient: CBCentralManagerDelegate {
         if self.peripheral === peripheral {
             self.peripheral = nil
             outgoingCameraControlCharacteristic = nil
+            publishStateChange()
         }
     }
 }
@@ -440,6 +483,7 @@ extension BleCameraControlClient: CBCentralManagerDelegate {
 extension BleCameraControlClient: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let services = peripheral.services else {
+            publishStateChange()
             return
         }
 
@@ -463,17 +507,24 @@ extension BleCameraControlClient: CBPeripheralDelegate {
                 continue
             }
         }
+
+        publishStateChange()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let characteristics = service.characteristics else {
+            publishStateChange()
             return
         }
 
         for characteristic in characteristics {
             switch characteristic.uuid {
             case BlackmagicBleConstants.outgoingCameraControl:
-                outgoingCameraControlCharacteristic = characteristic
+                if Self.isCameraControlCharacteristicWriteCapable(characteristic.properties) {
+                    outgoingCameraControlCharacteristic = characteristic
+                } else {
+                    outgoingCameraControlCharacteristic = nil
+                }
             case BlackmagicBleConstants.incomingCameraControl,
                 BlackmagicBleConstants.timecode,
                 BlackmagicBleConstants.cameraStatus:
@@ -482,6 +533,8 @@ extension BleCameraControlClient: CBPeripheralDelegate {
                 continue
             }
         }
+
+        publishStateChange()
     }
 
     private func subscribeIfSupported(_ characteristic: CBCharacteristic, on peripheral: CBPeripheral) {

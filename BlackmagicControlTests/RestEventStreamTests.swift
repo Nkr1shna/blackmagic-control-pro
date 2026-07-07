@@ -49,6 +49,41 @@ final class RestEventStreamTests: XCTestCase {
         XCTAssertNil(task.cancelCode)
     }
 
+    func testConnectSendsCorePropertySubscription() throws {
+        let task = FakeRestWebSocketTask()
+        let stream = RestEventStream(
+            baseURL: URL(string: "http://192.168.0.10")!,
+            webSocketTaskFactory: { _ in task }
+        )
+
+        stream.connect { _ in XCTFail("Unexpected event") }
+
+        XCTAssertEqual(task.sentStrings.count, 1)
+
+        let data = try XCTUnwrap(task.sentStrings.first?.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messageData = try XCTUnwrap(json["data"] as? [String: Any])
+
+        XCTAssertNil(json["action"])
+        XCTAssertNil(json["properties"])
+        XCTAssertEqual(json["type"] as? String, "request")
+        XCTAssertEqual(messageData["action"] as? String, "subscribe")
+        XCTAssertEqual(messageData["properties"] as? [String], [
+            "/transports/0/record",
+            "/transports/0/timecode",
+            "/media/workingset",
+            "/media/active",
+            "/camera/power",
+            "/video/iso",
+            "/video/shutter",
+            "/video/whiteBalance",
+            "/video/whiteBalanceTint",
+            "/lens/iris",
+            "/lens/focus",
+            "/lens/focus/description"
+        ])
+    }
+
     func testEventMessageDecodesActionPropertyDataAndType() throws {
         let json = """
         {
@@ -99,6 +134,7 @@ private final class FakeRestWebSocketTask: RestWebSocketTask {
     private(set) var resumeCallCount = 0
     private(set) var cancelCode: URLSessionWebSocketTask.CloseCode?
     private(set) var cancelReason: Data?
+    private(set) var sentStrings: [String] = []
 
     init(onCancel: @escaping () -> Void = {}) {
         self.onCancel = onCancel
@@ -119,6 +155,16 @@ private final class FakeRestWebSocketTask: RestWebSocketTask {
     ) {
         receiveCallCount += 1
         receiveCompletions.append(completionHandler)
+    }
+
+    func send(
+        _ message: URLSessionWebSocketTask.Message,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        if case let .string(string) = message {
+            sentStrings.append(string)
+        }
+        completionHandler(nil)
     }
 
     func completeReceive(_ result: Result<URLSessionWebSocketTask.Message, Error>) {
