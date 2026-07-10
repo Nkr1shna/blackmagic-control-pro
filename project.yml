@@ -14,8 +14,9 @@ targets:
       - BlackmagicControl
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.local.BlackmagicControl
+        PRODUCT_BUNDLE_IDENTIFIER: com.krishnanelloore.camcontrolpro
         INFOPLIST_FILE: BlackmagicControl/App/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: 2
         SUPPORTS_MACCATALYST: false
   BlackmagicControlTests:

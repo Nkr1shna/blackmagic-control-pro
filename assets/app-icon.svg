@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14171A"/>
+      <stop offset="1" stop-color="#0B0D0F"/>
+    </linearGradient>
+    <radialGradient id="record" cx="0" cy="0" r="1" gradientTransform="translate(472 389) rotate(46) scale(174)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF7152"/>
+      <stop offset="0.58" stop-color="#FF4E2A"/>
+      <stop offset="1" stop-color="#E83217"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#background)"/>
+
+  <rect x="140" y="196" width="744" height="632" rx="72" fill="#101417" stroke="#EDF2F1" stroke-width="38"/>
+  <rect x="188" y="244" width="648" height="536" rx="32" fill="#080A0C" stroke="#4B5558" stroke-width="10"/>
+
+  <circle cx="512" cy="430" r="112" fill="url(#record)"/>
+  <circle cx="512" cy="430" r="128" fill="none" stroke="#FF4E2A" stroke-opacity="0.22" stroke-width="12"/>
+
+  <path d="M250 646 H346 L382 606 L430 688 L478 630 L526 662 L574 590 L622 678 L670 628 L714 646 H774"
+        fill="none" stroke="#3FA8A0" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M250 714 H344 L384 694 L428 732 L478 700 L526 718 L574 686 L620 724 L670 700 L714 714 H774"
+        fill="none" stroke="#3FA8A0" stroke-opacity="0.64" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M250 574 H774" fill="none" stroke="#3FA8A0" stroke-opacity="0.36" stroke-width="12" stroke-linecap="round"/>
+</svg>
