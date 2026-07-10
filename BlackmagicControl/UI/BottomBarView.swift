@@ -1,5 +1,17 @@
 import SwiftUI
 
+/// A user-tagged position along the focus bar that can be recalled with a tap.
+struct FocusMark: Identifiable, Equatable, Codable {
+    var id = UUID()
+    /// Normalised lens position, 0 (near) ... 1 (far).
+    var position: Double
+
+    init(id: UUID = UUID(), position: Double) {
+        self.id = id
+        self.position = min(max(position, 0), 1)
+    }
+}
+
 /// Local (iPad-side) monitoring preferences.
 struct LocalMonitorPrefs: Equatable, Codable {
     var frameGuideStyle: Int8 = 0
@@ -7,6 +19,36 @@ struct LocalMonitorPrefs: Equatable, Codable {
     var showCrosshair = false
     var showCenterDot = false
     var safeAreaPercentage: Int = 0
+    var focusMarks: [FocusMark] = []
+
+    init(
+        frameGuideStyle: Int8 = 0,
+        showThirds: Bool = false,
+        showCrosshair: Bool = false,
+        showCenterDot: Bool = false,
+        safeAreaPercentage: Int = 0,
+        focusMarks: [FocusMark] = []
+    ) {
+        self.frameGuideStyle = frameGuideStyle
+        self.showThirds = showThirds
+        self.showCrosshair = showCrosshair
+        self.showCenterDot = showCenterDot
+        self.safeAreaPercentage = safeAreaPercentage
+        self.focusMarks = focusMarks
+    }
+
+    // Decode each key defensively so older persisted payloads (missing newer
+    // keys) still load instead of resetting every preference.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = LocalMonitorPrefs()
+        frameGuideStyle = try container.decodeIfPresent(Int8.self, forKey: .frameGuideStyle) ?? defaults.frameGuideStyle
+        showThirds = try container.decodeIfPresent(Bool.self, forKey: .showThirds) ?? defaults.showThirds
+        showCrosshair = try container.decodeIfPresent(Bool.self, forKey: .showCrosshair) ?? defaults.showCrosshair
+        showCenterDot = try container.decodeIfPresent(Bool.self, forKey: .showCenterDot) ?? defaults.showCenterDot
+        safeAreaPercentage = try container.decodeIfPresent(Int.self, forKey: .safeAreaPercentage) ?? defaults.safeAreaPercentage
+        focusMarks = try container.decodeIfPresent([FocusMark].self, forKey: .focusMarks) ?? defaults.focusMarks
+    }
 
     private static let defaultsKey = "LocalMonitorPrefs"
 

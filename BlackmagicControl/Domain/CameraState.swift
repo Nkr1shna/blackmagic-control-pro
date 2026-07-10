@@ -94,7 +94,9 @@ struct RecordingFormat: Equatable {
     var resolutionLabel: String {
         switch (width, height) {
         case (4096, 2160): return "4K DCI"
+        case (4096, 1720): return "4K 2.4:1"
         case (3840, 2160): return "UHD"
+        case (2880, 2160): return "2.8K Anamorphic"
         case (2688, 1512): return "2.6K"
         case (2048, 1080): return "2K DCI"
         case (1920, 1080): return "HD"
@@ -241,6 +243,32 @@ struct TransportState: Equatable {
 
 // MARK: - Monitoring / overlays
 
+/// Category 3.0 "Overlay enables": which overlays are drawn, and on which
+/// outputs. Selecting a frame guide style (3.3) alone does not make guides
+/// visible — the `frameGuides` bit here has to be set too.
+struct OverlayEnables: Equatable {
+    struct Overlays: OptionSet, Equatable {
+        let rawValue: UInt16
+
+        static let status = Overlays(rawValue: 1 << 0)
+        static let frameGuides = Overlays(rawValue: 1 << 1)
+        static let cleanFeed = Overlays(rawValue: 1 << 2)
+    }
+
+    struct Displays: OptionSet, Equatable {
+        let rawValue: UInt16
+
+        static let lcd = Displays(rawValue: 1 << 0)
+        static let hdmi = Displays(rawValue: 1 << 1)
+        static let evf = Displays(rawValue: 1 << 2)
+        static let mainSDI = Displays(rawValue: 1 << 3)
+        static let frontSDI = Displays(rawValue: 1 << 4)
+    }
+
+    var overlays: Overlays = [.status]
+    var displays: Displays = [.lcd, .hdmi]
+}
+
 struct OverlayState: Equatable {
     struct GridFlags: OptionSet, Equatable {
         let rawValue: Int8
@@ -385,6 +413,7 @@ struct CameraState: Equatable {
 
     // Monitoring
     var overlays = OverlayState()
+    var overlayEnables: OverlayEnables?
     var exposureTools = ExposureToolsState()
     var focusAssist = FocusAssistStyle()
     var zebraLevel: Double?
@@ -522,16 +551,26 @@ enum CameraPresets {
 
     static let resolutions: [(width: Int, height: Int, label: String)] = [
         (4096, 2160, "4K DCI"),
+        (4096, 1720, "4K 2.4:1"),
         (3840, 2160, "UHD"),
+        (2880, 2160, "2.8K Anamorphic"),
         (2688, 1512, "2.6K 16:9"),
         (1920, 1080, "HD")
     ]
 
     static let proResVariants: [(variant: UInt8, label: String)] = [
-        (0, "HQ"), (1, "422"), (2, "LT"), (3, "Proxy")
+        (0, "HQ"), (1, "422"), (2, "LT"), (3, "PXY")
     ]
 
-    static let brawVariants: [(variant: UInt8, label: String)] = [
-        (0, "Q0"), (1, "Q5"), (2, "3:1"), (3, "5:1"), (4, "8:1"), (5, "12:1")
+    /// BRAW constant-bitrate variants, as laid out on the camera.
+    static let brawConstantBitrate: [(variant: UInt8, label: String)] = [
+        (2, "3:1"), (3, "5:1"), (4, "8:1"), (5, "12:1")
     ]
+
+    /// BRAW constant-quality variants, as laid out on the camera.
+    static let brawConstantQuality: [(variant: UInt8, label: String)] = [
+        (0, "Q0"), (7, "Q1"), (8, "Q3"), (1, "Q5")
+    ]
+
+    static let offSpeedFrameRateRange = 5...60
 }

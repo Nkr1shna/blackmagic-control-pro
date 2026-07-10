@@ -103,20 +103,30 @@ struct TopBarView: View {
         }
     }
 
+    /// Tapping the timecode toggles the camera between clip duration and
+    /// timecode, mirroring a tap on the camera's own display.
     private var timecodeView: some View {
-        VStack(spacing: 1) {
-            Text(state.timecode ?? "00:00:00:00")
-                .font(.system(size: 27, weight: .medium).monospacedDigit())
-                .foregroundStyle(state.isRecording ? HUD.record : HUD.value)
+        Button {
+            controller.setTimecodeSource(clip: !(state.timecodeSourceClip ?? false))
+        } label: {
+            VStack(spacing: 1) {
+                Text(state.timecode ?? "00:00:00:00")
+                    .font(.system(size: 27, weight: .medium).monospacedDigit())
+                    .foregroundStyle(state.isRecording ? HUD.record : HUD.value)
 
-            if !state.formatLabel.isEmpty {
-                Text(state.formatLabel)
-                    .font(HUD.labelFont(10))
-                    .foregroundStyle(HUD.label)
-                    .tracking(1)
+                if !state.formatLabel.isEmpty {
+                    Text(state.formatLabel)
+                        .font(HUD.labelFont(10))
+                        .foregroundStyle(HUD.label)
+                        .tracking(1)
+                }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(!isReady)
         .accessibilityLabel("Timecode")
+        .accessibilityHint("Switches between timecode and clip duration")
     }
 
     private var connectionChip: some View {

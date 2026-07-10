@@ -270,9 +270,14 @@ private struct FpsPanel: View {
 
 struct FocusPanelView: View {
     @ObservedObject var controller: CameraBleController
+    @Binding var focusMarks: [FocusMark]
     let onClose: () -> Void
 
     @State private var focus: Double = 0.5
+
+    private var alreadyMarked: Bool {
+        focusMarks.contains { abs($0.position - focus) < 0.01 }
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -302,6 +307,8 @@ struct FocusPanelView: View {
             ) { value in
                 controller.setFocus(value)
             }
+
+            focusMarksSection
 
             HStack(spacing: 8) {
                 HUDPresetChip(label: "Auto Focus", isSelected: false) {
@@ -335,5 +342,135 @@ struct FocusPanelView: View {
                 focus = value
             }
         }
+    }
+
+    // MARK: Focus marks
+
+    private var focusMarksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("MARKS")
+                    .font(HUD.labelFont(9))
+                    .foregroundStyle(HUD.label)
+                    .tracking(1.4)
+
+                Spacer()
+
+                Button {
+                    addMark()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: alreadyMarked ? "checkmark" : "plus.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(alreadyMarked ? "Marked" : "Add Mark")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(alreadyMarked ? HUD.label : HUD.accent)
+                }
+                .buttonStyle(.plain)
+                .disabled(alreadyMarked)
+                .accessibilityLabel("Add focus mark at current position")
+            }
+
+            FocusMarksBar(
+                marks: sortedMarks,
+                current: focus,
+                onRecall: recall,
+                onDelete: deleteMark
+            )
+            .frame(height: 46)
+
+            if focusMarks.isEmpty {
+                Text("Tag a focus position with Add Mark, then tap a pin to snap the lens back to it.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(HUD.dimValue)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var sortedMarks: [FocusMark] {
+        focusMarks.sorted { $0.position < $1.position }
+    }
+
+    private func addMark() {
+        guard !alreadyMarked else { return }
+        focusMarks.append(FocusMark(position: focus))
+    }
+
+    private func recall(_ mark: FocusMark) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            focus = mark.position
+        }
+        controller.setFocus(mark.position)
+    }
+
+    private func deleteMark(_ mark: FocusMark) {
+        focusMarks.removeAll { $0.id == mark.id }
+    }
+}
+
+/// A thin track that shows the live focus position and every tagged mark as a
+/// tappable pin, so the operator can snap the lens between rehearsed distances.
+private struct FocusMarksBar: View {
+    let marks: [FocusMark]
+    let current: Double
+    let onRecall: (FocusMark) -> Void
+    let onDelete: (FocusMark) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let trackY = geo.size.height - 8
+
+            ZStack {
+                Capsule()
+                    .fill(HUD.tileHighlight)
+                    .frame(width: width, height: 4)
+                    .position(x: width / 2, y: trackY)
+
+                Capsule()
+                    .fill(HUD.accent.opacity(0.55))
+                    .frame(width: max(2, current * width), height: 4)
+                    .position(x: (current * width) / 2, y: trackY)
+
+                Circle()
+                    .fill(HUD.value)
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(HUD.barBackground, lineWidth: 2))
+                    .position(x: current * width, y: trackY)
+
+                ForEach(marks) { mark in
+                    pin(for: mark)
+                        .position(x: mark.position * width, y: trackY - 18)
+                }
+            }
+        }
+    }
+
+    private func pin(for mark: FocusMark) -> some View {
+        Button {
+            onRecall(mark)
+        } label: {
+            VStack(spacing: 0) {
+                Text("\(Int((mark.position * 100).rounded()))")
+                    .font(.system(size: 9, weight: .bold).monospacedDigit())
+                    .foregroundStyle(HUD.accent)
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(HUD.accent)
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) {
+                onDelete(mark)
+            } label: {
+                Label("Remove Mark", systemImage: "trash")
+            }
+        }
+        .accessibilityLabel("Recall focus mark at \(Int((mark.position * 100).rounded())) percent")
     }
 }

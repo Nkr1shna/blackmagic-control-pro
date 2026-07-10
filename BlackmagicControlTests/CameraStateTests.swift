@@ -52,6 +52,8 @@ final class CameraStateTests: XCTestCase {
 
     func testCodecLabels() {
         XCTAssertEqual(CodecInfo(codec: .blackmagicRaw, variant: 0).label, "BRAW Q0")
+        XCTAssertEqual(CodecInfo(codec: .blackmagicRaw, variant: 7).label, "BRAW Q1")
+        XCTAssertEqual(CodecInfo(codec: .blackmagicRaw, variant: 8).label, "BRAW Q3")
         XCTAssertEqual(CodecInfo(codec: .proRes, variant: 0).label, "ProRes HQ")
         XCTAssertEqual(CodecInfo(codec: .proRes, variant: 3).label, "ProRes Proxy")
     }

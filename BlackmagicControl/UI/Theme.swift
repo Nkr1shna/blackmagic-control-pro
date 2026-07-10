@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Visual language for the monitor HUD: near-black strips, thin dividers,
-/// grey uppercase micro-labels over large light numerals, orange accent for
-/// active/selected controls and red for record.
+/// grey uppercase micro-labels over large light numerals, Blackmagic blue
+/// accent for active/selected controls and red for record.
 enum HUD {
     static let barBackground = Color(white: 0.06).opacity(0.92)
     static let panelBackground = Color(white: 0.09)
@@ -11,7 +11,8 @@ enum HUD {
     static let label = Color.white.opacity(0.55)
     static let value = Color.white.opacity(0.94)
     static let dimValue = Color.white.opacity(0.35)
-    static let accent = Color(red: 1.0, green: 0.58, blue: 0.0)
+    // Blackmagic Design brand blue (~#1A9BE0).
+    static let accent = Color(red: 0.10, green: 0.61, blue: 0.88)
     static let record = Color(red: 0.96, green: 0.16, blue: 0.12)
     static let ok = Color(red: 0.24, green: 0.86, blue: 0.43)
 
@@ -123,12 +124,61 @@ struct HUDPresetChip: View {
     }
 }
 
+// MARK: - Camera-style option tile (matches the on-camera menu look:
+// grey tile, lighter when selected, Blackmagic blue underline)
+
+struct HUDOptionTile: View {
+    let label: String
+    var sublabel: String?
+    var isSelected = false
+    var isEnabled = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isEnabled ? HUD.value : HUD.dimValue)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                if let sublabel {
+                    Text(sublabel)
+                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .foregroundStyle(isEnabled ? HUD.label : HUD.dimValue)
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isSelected ? Color.white.opacity(0.18) : HUD.tileHighlight)
+            )
+            .overlay(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(isSelected ? HUD.accent : Color.clear)
+                    .frame(height: 3)
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
 // MARK: - Labeled slider row (settings + panels)
 
 struct HUDSliderRow: View {
     let title: String
     @Binding var value: Double
     var range: ClosedRange<Double> = 0...1
+    var step: Double?
     var display: ((Double) -> String)?
     var onCommit: (Double) -> Void
 
@@ -140,17 +190,30 @@ struct HUDSliderRow: View {
                 .tracking(1)
                 .frame(width: 92, alignment: .leading)
 
-            Slider(value: $value, in: range) { editing in
-                if !editing {
-                    onCommit(value)
-                }
-            }
-            .tint(HUD.accent)
+            slider
+                .tint(HUD.accent)
 
             Text(display?(value) ?? value.formatted(.number.precision(.fractionLength(2))))
                 .font(.system(size: 13, weight: .medium).monospacedDigit())
                 .foregroundStyle(HUD.value)
                 .frame(width: 56, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var slider: some View {
+        if let step {
+            Slider(value: $value, in: range, step: step) { editing in
+                if !editing {
+                    onCommit(value)
+                }
+            }
+        } else {
+            Slider(value: $value, in: range) { editing in
+                if !editing {
+                    onCommit(value)
+                }
+            }
         }
     }
 }

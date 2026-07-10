@@ -147,6 +147,16 @@ final class CameraStateDecoderTests: XCTestCase {
         XCTAssertEqual(state.displayLut?.selectedLut, 0)
     }
 
+    func testDecodesOverlayEnables() {
+        var state = CameraState()
+        CameraStateDecoder.apply(
+            message(category: 3, parameter: 0, dataType: 2, payload: [0b11, 0, 0b11, 0]),
+            to: &state
+        )
+        XCTAssertEqual(state.overlayEnables?.overlays, [.status, .frameGuides])
+        XCTAssertEqual(state.overlayEnables?.displays, [.lcd, .hdmi])
+    }
+
     func testIgnoresUnknownCategories() {
         var state = CameraState()
         let before = state

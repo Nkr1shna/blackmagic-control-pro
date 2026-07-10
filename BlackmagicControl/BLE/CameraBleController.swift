@@ -306,9 +306,73 @@ final class CameraBleController: NSObject, ObservableObject {
         camera.recordingFormat = format
     }
 
+    func setSensorAreaWindowed(_ windowed: Bool) {
+        guard var format = camera.recordingFormat else {
+            lastError = "Waiting for the camera to report its recording format."
+            return
+        }
+        if windowed {
+            format.flags.insert(.windowed)
+        } else {
+            format.flags.remove(.windowed)
+        }
+        send { try CcuCommand.recordingFormat(format) }
+        camera.recordingFormat = format
+    }
+
+    func setOffSpeedRecording(_ enabled: Bool) {
+        guard var format = camera.recordingFormat else {
+            lastError = "Waiting for the camera to report its recording format."
+            return
+        }
+        if enabled {
+            format.flags.insert(.sensorOffSpeed)
+            if format.sensorFrameRate <= 0 {
+                format.sensorFrameRate = format.fileFrameRate
+            }
+        } else {
+            format.flags.remove(.sensorOffSpeed)
+        }
+        send { try CcuCommand.recordingFormat(format) }
+        camera.recordingFormat = format
+    }
+
+    func setOffSpeedFrameRate(fps: Int) {
+        guard var format = camera.recordingFormat else {
+            lastError = "Waiting for the camera to report its recording format."
+            return
+        }
+        format.sensorFrameRate = fps
+        format.flags.remove(.sensorMRate)
+        send { try CcuCommand.recordingFormat(format) }
+        camera.recordingFormat = format
+    }
+
     func setCodec(_ codec: BasicCodec, variant: UInt8) {
         send { try CcuCommand.codec(CodecInfo(codec: codec, variant: variant)) }
         camera.codec = CodecInfo(codec: codec, variant: variant)
+    }
+
+    func setTimelapseRecording(_ enabled: Bool) {
+        guard var transport = camera.transport else {
+            lastError = "Waiting for the camera to report its transport state."
+            return
+        }
+        if enabled {
+            transport.flags.insert(.timeLapse)
+        } else {
+            transport.flags.remove(.timeLapse)
+        }
+        send {
+            try CcuCommand.transportMode(
+                transport.mode,
+                speed: transport.speed,
+                flags: transport.flags,
+                slot1: transport.slot1Medium,
+                slot2: transport.slot2Medium
+            )
+        }
+        camera.transport = transport
     }
 
     func setDynamicRange(_ mode: DynamicRangeMode) {
@@ -326,14 +390,44 @@ final class CameraBleController: NSObject, ObservableObject {
         camera.autoExposureMode = mode
     }
 
+    /// Deliberately not applied optimistically: the row highlights only what
+    /// the camera echoes back, so an ignored command is visible to the user.
     func setDisplayLut(selected: Int, enabled: Bool) {
         send { try CcuCommand.displayLut(selected: Int8(clamping: selected), enabled: enabled) }
-        camera.displayLut = DisplayLutState(selectedLut: selected, isEnabled: enabled)
     }
 
     func setOverlays(_ overlays: OverlayState) {
         send { try CcuCommand.overlays(overlays) }
         camera.overlays = overlays
+    }
+
+    /// Selecting a frame guide style also enables frame guide drawing on the
+    /// camera outputs (3.0), because the style alone (3.3) never turns
+    /// guides on. Style 0 turns them off both ways.
+    func setFrameGuideStyle(_ style: Int8) {
+        var overlays = camera.overlays
+        overlays.frameGuideStyle = style
+        setOverlays(overlays)
+
+        var enables = camera.overlayEnables ?? OverlayEnables()
+        if style > 0 {
+            enables.overlays.insert(.frameGuides)
+        } else {
+            enables.overlays.remove(.frameGuides)
+        }
+        enables.displays.formUnion([.lcd, .hdmi])
+        setOverlayEnables(enables)
+    }
+
+    func setSafeAreaPercentage(_ percentage: Int) {
+        var overlays = camera.overlays
+        overlays.safeAreaPercentage = Int8(clamping: percentage)
+        setOverlays(overlays)
+    }
+
+    func setOverlayEnables(_ enables: OverlayEnables) {
+        send { try CcuCommand.overlayEnables(enables) }
+        camera.overlayEnables = enables
     }
 
     func setExposureTools(_ tools: ExposureToolsState) {
@@ -372,11 +466,6 @@ final class CameraBleController: NSObject, ObservableObject {
     func setColorBars(seconds: Int) {
         send { try CcuCommand.colorBars(seconds: Int8(clamping: seconds)) }
         camera.colorBarsSeconds = Int8(clamping: seconds)
-    }
-
-    func setDisplayBrightness(_ level: Double) {
-        send { try CcuCommand.displayBrightness(level) }
-        camera.displayBrightness = level
     }
 
     func setAudio(_ update: (inout AudioState) -> Void) {

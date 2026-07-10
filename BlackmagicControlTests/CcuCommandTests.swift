@@ -49,6 +49,15 @@ final class CcuCommandTests: XCTestCase {
         XCTAssertEqual(Array(packet.bytes), [255, 8, 0, 0, 3, 3, 1, 0, 5, 75, 90, 0b101])
     }
 
+    func testOverlayEnablesPacketEncodesBitFields() throws {
+        var enables = OverlayEnables()
+        enables.overlays = [.status, .frameGuides]
+        enables.displays = [.lcd, .hdmi]
+
+        let packet = try CcuCommand.overlayEnables(enables)
+        XCTAssertEqual(Array(packet.bytes), [255, 8, 0, 0, 3, 0, 2, 0, 0b11, 0, 0b11, 0])
+    }
+
     func testExposureToolsPacketEncodesBitFields() throws {
         var tools = ExposureToolsState()
         tools.tools = [.zebra, .falseColor]
@@ -82,6 +91,16 @@ final class CcuCommandTests: XCTestCase {
     func testCodecPacket() throws {
         let packet = try CcuCommand.codec(CodecInfo(codec: .blackmagicRaw, variant: 3))
         XCTAssertEqual(Array(packet.bytes), [255, 6, 0, 0, 10, 0, 1, 0, 3, 3, 0, 0])
+    }
+
+    func testTimelapseTransportPacketPreservesMedia() throws {
+        let packet = try CcuCommand.transportMode(
+            .preview,
+            flags: [.timeLapse, .disk1Active],
+            slot1: .cfast,
+            slot2: .ssd
+        )
+        XCTAssertEqual(Array(packet.bytes)[8...12], [0, 0, 0b1010_0000, 0, 2])
     }
 
     func testColorLiftEncodesFourChannels() throws {

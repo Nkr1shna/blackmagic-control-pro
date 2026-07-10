@@ -27,6 +27,10 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var currentDeviceID: String?
     private var hasAudioInput = false
+    /// Tracks the live device's active format so the feed description stays
+    /// current when the camera changes its output mid-session (e.g. the
+    /// project frame rate is changed on the camera).
+    private var formatObservation: NSKeyValueObservation?
 
     override init() {
         super.init()
@@ -116,6 +120,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
                 errorMessage = nil
                 isActive = true
                 feedDescription = Self.describeFeed(of: device)
+                observeFormatChanges(of: device)
                 AppLog.preview.info("Preview live: \(feedDescription ?? "unknown format")")
             case .failure(let error):
                 AppLog.preview.error("Preview session failed: \(error.localizedDescription)")
@@ -138,7 +143,23 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         isActive = false
         currentDeviceID = nil
         feedDescription = nil
+        formatObservation = nil
         enqueueStopSession()
+    }
+
+    /// Keeps `feedDescription` in sync when the camera renegotiates its USB
+    /// output while the session is running (resolution or frame rate change).
+    private func observeFormatChanges(of device: AVCaptureDevice) {
+        formatObservation = device.observe(\.activeFormat) { [weak self] device, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.currentDeviceID == device.uniqueID else { return }
+                let description = Self.describeFeed(of: device)
+                if self.feedDescription != description {
+                    self.feedDescription = description
+                    AppLog.preview.info("Feed format changed: \(description)")
+                }
+            }
+        }
     }
 
     // MARK: - Local recording
@@ -208,13 +229,22 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
     }
 
     /// Sets an external folder (e.g. a USB drive picked in Files) that
-    /// finished recordings are moved to.
+    /// finished recordings are moved to. Picking this app's own container
+    /// (which Files shows as the app name but resolves to "Documents") is
+    /// already the default location, so it resets to the built-in
+    /// destination instead of storing a bookmark.
     func setExternalDestination(_ url: URL) {
         let accessing = url.startAccessingSecurityScopedResource()
         defer {
             if accessing {
                 url.stopAccessingSecurityScopedResource()
             }
+        }
+
+        if Self.isInsideAppContainer(url) {
+            clearExternalDestination()
+            localRecordingMessage = "Recordings stay in this app: On My iPad → Blackmagic Control Pro → Recordings."
+            return
         }
 
         do {
@@ -227,6 +257,13 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         }
     }
 
+    static func isInsideAppContainer(_ url: URL) -> Bool {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documentsPath = documents.standardizedFileURL.resolvingSymlinksInPath().path
+        let targetPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return targetPath == documentsPath || targetPath.hasPrefix(documentsPath + "/")
+    }
+
     func clearExternalDestination() {
         UserDefaults.standard.removeObject(forKey: Self.destinationBookmarkKey)
         externalDestinationName = nil
@@ -236,6 +273,12 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         guard let bookmark = UserDefaults.standard.data(forKey: destinationBookmarkKey) else { return nil }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: bookmark, bookmarkDataIsStale: &stale) else { return nil }
+        // Bookmarks saved before the app-container check existed may point at
+        // the app's own Documents folder — treat those as the default too.
+        if isInsideAppContainer(url) {
+            UserDefaults.standard.removeObject(forKey: destinationBookmarkKey)
+            return nil
+        }
         return url.lastPathComponent
     }
 
@@ -282,7 +325,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
 
     private func moveToExternalDestinationIfConfigured(_ url: URL) {
         guard let bookmark = UserDefaults.standard.data(forKey: Self.destinationBookmarkKey) else {
-            localRecordingMessage = "Saved to Files → On My iPad → Blackmagic Control → Recordings."
+            localRecordingMessage = "Saved to Files → On My iPad → Blackmagic Control Pro → Recordings."
             return
         }
 
@@ -345,6 +388,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         status = "Waiting for video"
         errorMessage = nil
         feedDescription = nil
+        formatObservation = nil
         enqueueStopSession()
     }
 

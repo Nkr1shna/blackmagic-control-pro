@@ -70,7 +70,10 @@ struct MonitorView: View {
                         }
                         .padding(.bottom, 8)
                     } else if showFocusPanel {
-                        FocusPanelView(controller: controller) {
+                        FocusPanelView(
+                            controller: controller,
+                            focusMarks: $monitorPrefs.focusMarks
+                        ) {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 showFocusPanel = false
                             }

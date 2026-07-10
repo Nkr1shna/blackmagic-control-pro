@@ -103,6 +103,14 @@ enum CameraStateDecoder {
             if let value = message.boolValue { state.audio.phantomPower = value }
 
         // MARK: Output overlays
+        case (3, 0):
+            let values = message.uint16Values
+            if values.count >= 2 {
+                state.overlayEnables = OverlayEnables(
+                    overlays: OverlayEnables.Overlays(rawValue: values[0]),
+                    displays: OverlayEnables.Displays(rawValue: values[1])
+                )
+            }
         case (3, 3):
             let values = message.int8Values
             if values.count >= 4 {

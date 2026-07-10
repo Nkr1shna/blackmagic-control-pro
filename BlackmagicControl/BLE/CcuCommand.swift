@@ -193,6 +193,16 @@ enum CcuCommand {
 
     // MARK: - Category 3: Output overlays (Cameras 4.0+)
 
+    /// 3.0 "Overlay enables": which overlays are drawn and on which outputs.
+    static func overlayEnables(_ state: OverlayEnables) throws -> BlackmagicCcuPacket {
+        let values: [Int16] = [
+            Int16(bitPattern: state.overlays.rawValue),
+            Int16(bitPattern: state.displays.rawValue)
+        ]
+        return try make(category: 3, parameter: 0, dataType: .int16,
+                        payload: BlackmagicCcuPacket.int16Payload(values))
+    }
+
     static func overlays(_ state: OverlayState) throws -> BlackmagicCcuPacket {
         try make(category: 3, parameter: 3, dataType: .int8, payload: Data([
             UInt8(bitPattern: state.frameGuideStyle),

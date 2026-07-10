@@ -175,7 +175,7 @@ private struct AboutSettings: View {
         HUDSection(title: "Compatibility") {
             infoRow(
                 "Camera",
-                "Designed for Blackmagic Pocket Cinema Camera 4K/6K over Bluetooth + USB monitor feed. Other models may work but are untested."
+                "Blackmagic Pocket Cinema Camera 4K / 6K. Other models may work but are untested."
             )
         }
         .sheet(isPresented: $isPresentingMail) {
@@ -288,54 +288,119 @@ private struct AboutSettings: View {
 private struct RecordSettings: View {
     @ObservedObject var controller: CameraBleController
 
+    @State private var offSpeedFps = 24.0
+
+    private static let offSpeedRange =
+        Double(CameraPresets.offSpeedFrameRateRange.lowerBound)...Double(CameraPresets.offSpeedFrameRateRange.upperBound)
+
     private var state: CameraState { controller.camera }
 
+    private var selectedCodec: BasicCodec? { state.codec?.codec }
+
+    /// BRAW quality selection mode, derived from the current variant the way
+    /// the camera lays it out: Constant Bitrate (3:1…12:1) vs Constant
+    /// Quality (Q0…Q5).
+    private var brawIsConstantBitrate: Bool {
+        guard let variant = state.codec?.variant else { return true }
+        return CameraPresets.brawConstantBitrate.contains { $0.variant == variant }
+    }
+
+    private var availableResolutions: [(width: Int, height: Int, label: String)] {
+        guard selectedCodec == .proRes else { return CameraPresets.resolutions }
+        return CameraPresets.resolutions.filter {
+            ($0.width, $0.height) == (4096, 2160)
+                || ($0.width, $0.height) == (3840, 2160)
+                || ($0.width, $0.height) == (1920, 1080)
+        }
+    }
+
     var body: some View {
-        HUDSection(title: "Codec") {
-            HUDSegmentedRow(
-                title: "Codec",
-                options: [(BasicCodec.blackmagicRaw, "BRAW"), (BasicCodec.proRes, "ProRes")],
-                selection: state.codec?.codec
-            ) { codec in
-                let defaultVariant: UInt8 = codec == .blackmagicRaw ? 3 : 1
-                controller.setCodec(codec, variant: defaultVariant)
+        HUDSection(title: "Codec and Quality") {
+            HStack(spacing: 6) {
+                HUDOptionTile(
+                    label: "Blackmagic RAW",
+                    isSelected: selectedCodec == .blackmagicRaw
+                ) {
+                    controller.setCodec(.blackmagicRaw, variant: 3)
+                }
+
+                HUDOptionTile(label: "ProRes RAW", isEnabled: false) {}
+                    .accessibilityHint("Not available over Bluetooth camera control")
+
+                HUDOptionTile(
+                    label: "ProRes",
+                    isSelected: selectedCodec == .proRes
+                ) {
+                    controller.setCodec(.proRes, variant: 1)
+                }
             }
 
-            if state.codec?.codec == .proRes {
-                HUDSegmentedRow(
-                    title: "Quality",
-                    options: CameraPresets.proResVariants.map { ($0.variant, $0.label) },
-                    selection: state.codec?.variant
-                ) { variant in
-                    controller.setCodec(.proRes, variant: variant)
+            if selectedCodec == .proRes {
+                HStack(spacing: 6) {
+                    ForEach(CameraPresets.proResVariants, id: \.variant) { preset in
+                        HUDOptionTile(
+                            label: preset.label,
+                            isSelected: state.codec?.variant == preset.variant
+                        ) {
+                            controller.setCodec(.proRes, variant: preset.variant)
+                        }
+                    }
                 }
             } else {
-                HUDSegmentedRow(
-                    title: "Quality",
-                    options: CameraPresets.brawVariants.map { ($0.variant, $0.label) },
-                    selection: state.codec?.variant
-                ) { variant in
-                    controller.setCodec(.blackmagicRaw, variant: variant)
+                HStack(spacing: 6) {
+                    HUDOptionTile(
+                        label: "Constant Bitrate",
+                        isSelected: brawIsConstantBitrate
+                    ) {
+                        controller.setCodec(.blackmagicRaw, variant: 3)
+                    }
+
+                    HUDOptionTile(
+                        label: "Constant Quality",
+                        isSelected: !brawIsConstantBitrate
+                    ) {
+                        controller.setCodec(.blackmagicRaw, variant: 0)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    let variants = brawIsConstantBitrate
+                        ? CameraPresets.brawConstantBitrate
+                        : CameraPresets.brawConstantQuality
+                    ForEach(variants, id: \.variant) { preset in
+                        HUDOptionTile(
+                            label: preset.label,
+                            isSelected: state.codec?.variant == preset.variant
+                        ) {
+                            controller.setCodec(.blackmagicRaw, variant: preset.variant)
+                        }
+                    }
+                }
+            }
+        }
+
+        HUDSection(title: "Resolution") {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                spacing: 6
+            ) {
+                ForEach(availableResolutions, id: \.label) { preset in
+                    HUDOptionTile(
+                        label: preset.label,
+                        sublabel: "\(preset.width) x \(preset.height)",
+                        isSelected: state.recordingFormat.map {
+                            ($0.width, $0.height) == (preset.width, preset.height)
+                        } ?? false
+                    ) {
+                        controller.setResolution(width: preset.width, height: preset.height)
+                    }
                 }
             }
         }
 
         HUDSection(title: "Format") {
             HUDSegmentedRow(
-                title: "Resolution",
-                options: CameraPresets.resolutions.map { preset in
-                    ("\(preset.width)x\(preset.height)", preset.label)
-                },
-                selection: state.recordingFormat.map { "\($0.width)x\($0.height)" }
-            ) { key in
-                let parts = key.split(separator: "x").compactMap { Int($0) }
-                if parts.count == 2 {
-                    controller.setResolution(width: parts[0], height: parts[1])
-                }
-            }
-
-            HUDSegmentedRow(
-                title: "Frame Rate",
+                title: "Project Frame Rate",
                 options: CameraPresets.frameRates.map { ("\($0.fps)-\($0.mRate)", $0.label) },
                 selection: state.recordingFormat.map {
                     "\($0.fileFrameRate)-\($0.flags.contains(.fileMRate))"
@@ -345,6 +410,52 @@ private struct RecordSettings: View {
                 if parts.count == 2, let fps = Int(parts[0]) {
                     controller.setFrameRate(fps: fps, mRate: parts[1] == "true")
                 }
+            }
+
+            HUDSegmentedRow(
+                title: "Sensor Area",
+                options: [(false, "Full"), (true, "Windowed")],
+                selection: state.recordingFormat.map { $0.flags.contains(.windowed) }
+            ) { windowed in
+                controller.setSensorAreaWindowed(windowed)
+            }
+        }
+
+        HUDSection(title: "Off Speed Recording") {
+            HStack(spacing: 8) {
+                HUDPresetChip(
+                    label: state.recordingFormat?.flags.contains(.sensorOffSpeed) == true ? "On" : "Off",
+                    isSelected: state.recordingFormat?.flags.contains(.sensorOffSpeed) == true
+                ) {
+                    let enabled = state.recordingFormat?.flags.contains(.sensorOffSpeed) == true
+                    controller.setOffSpeedRecording(!enabled)
+                }
+            }
+
+            HUDSliderRow(
+                title: "Frame Rate",
+                value: $offSpeedFps,
+                range: Self.offSpeedRange,
+                step: 1,
+                display: { "\(Int($0)) fps" }
+            ) { value in
+                controller.setOffSpeedFrameRate(fps: Int(value))
+            }
+        }
+
+        HUDSection(title: "Timelapse") {
+            HStack(spacing: 8) {
+                HUDPresetChip(
+                    label: "Timelapse",
+                    isSelected: state.transport?.flags.contains(.timeLapse) == true
+                ) {
+                    let enabled = state.transport?.flags.contains(.timeLapse) == true
+                    controller.setTimelapseRecording(!enabled)
+                }
+
+                Text("Interval is set on the camera.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(HUD.label)
             }
         }
 
@@ -373,6 +484,21 @@ private struct RecordSettings: View {
                 controller.setAutoExposureMode(mode)
             }
         }
+        .onAppear(perform: syncFromCamera)
+        .onChange(of: state.recordingFormat?.sensorFrameRate) { _, newValue in
+            if let newValue, newValue > 0 {
+                offSpeedFps = Double(newValue)
+            }
+        }
+    }
+
+    private func syncFromCamera() {
+        if let rate = state.recordingFormat?.sensorFrameRate, rate > 0 {
+            offSpeedFps = Double(rate)
+        } else if let rate = state.recordingFormat?.fileFrameRate, rate > 0 {
+            offSpeedFps = Double(rate)
+        }
+        offSpeedFps = min(max(offSpeedFps, Self.offSpeedRange.lowerBound), Self.offSpeedRange.upperBound)
     }
 }
 
@@ -382,32 +508,35 @@ private struct MonitorSettings: View {
     @ObservedObject var controller: CameraBleController
 
     @State private var zebraLevel = 0.75
-    @State private var peakingLevel = 0.5
-    @State private var brightness = 0.5
+    @State private var focusAssistLevel = 0.5
     @State private var guideOpacity = 50.0
+    @State private var safeArea = 0.0
 
     private var state: CameraState { controller.camera }
 
-    var body: some View {
-        HUDSection(title: "Camera Display Overlays") {
-            Text("These affect the camera's LCD and HDMI outputs. Guides on the iPad preview are toggled from the bottom bar.")
-                .font(.system(size: 12))
-                .foregroundStyle(HUD.label)
+    /// A style is only "on" when the camera also draws frame guides (3.0).
+    private var effectiveFrameGuideStyle: Int8 {
+        if state.overlayEnables?.overlays.contains(.frameGuides) == false {
+            return 0
+        }
+        return state.overlays.frameGuideStyle
+    }
 
+    var body: some View {
+        HUDSection(title: "Frame Guides") {
             HUDSegmentedRow(
                 title: "Frame Guides",
                 options: OverlayState.frameGuideStyles.map { ($0.value, $0.label) },
-                selection: state.overlays.frameGuideStyle
+                selection: effectiveFrameGuideStyle
             ) { style in
-                var overlays = state.overlays
-                overlays.frameGuideStyle = style
-                controller.setOverlays(overlays)
+                controller.setFrameGuideStyle(style)
             }
 
             HUDSliderRow(
                 title: "Guide Opacity",
                 value: $guideOpacity,
                 range: 0...100,
+                step: 25,
                 display: { "\(Int($0))%" }
             ) { value in
                 var overlays = state.overlays
@@ -415,17 +544,32 @@ private struct MonitorSettings: View {
                 controller.setOverlays(overlays)
             }
 
-            HUDSegmentedRow(
+            HUDSliderRow(
                 title: "Safe Area",
-                options: [(Int8(0), "Off"), (Int8(80), "80%"), (Int8(90), "90%"), (Int8(95), "95%")],
-                selection: state.overlays.safeAreaPercentage
-            ) { percentage in
-                var overlays = state.overlays
-                overlays.safeAreaPercentage = percentage
-                controller.setOverlays(overlays)
+                value: $safeArea,
+                range: 0...100,
+                step: 5,
+                display: { $0 == 0 ? "Off" : "\(Int($0))%" }
+            ) { value in
+                controller.setSafeAreaPercentage(Int(value))
             }
+        }
 
-            gridToggles
+        HUDSection(title: "Grids") {
+            HStack(spacing: 8) {
+                HUDPresetChip(label: "Thirds", isSelected: state.overlays.gridFlags.contains(.thirds)) {
+                    toggleGrid(.thirds)
+                }
+                HUDPresetChip(label: "Crosshair", isSelected: state.overlays.gridFlags.contains(.crosshairs)) {
+                    toggleGrid(.crosshairs)
+                }
+                HUDPresetChip(label: "Center Dot", isSelected: state.overlays.gridFlags.contains(.centerDot)) {
+                    toggleGrid(.centerDot)
+                }
+                HUDPresetChip(label: "Horizon", isSelected: state.overlays.gridFlags.contains(.horizon)) {
+                    toggleGrid(.horizon)
+                }
+            }
         }
 
         HUDSection(title: "Exposure & Focus Tools") {
@@ -450,15 +594,6 @@ private struct MonitorSettings: View {
                 controller.setZebraLevel(value)
             }
 
-            HUDSliderRow(
-                title: "Peaking",
-                value: $peakingLevel,
-                range: 0...1,
-                display: { "\(Int($0 * 100))%" }
-            ) { value in
-                controller.setPeakingLevel(value)
-            }
-
             HUDSegmentedRow(
                 title: "Focus Assist",
                 options: [(Int8(0), "Peak"), (Int8(1), "Colored Lines")],
@@ -474,18 +609,18 @@ private struct MonitorSettings: View {
             ) { color in
                 controller.setFocusAssist(FocusAssistStyle(method: state.focusAssist.method, lineColor: color))
             }
-        }
 
-        HUDSection(title: "Display") {
             HUDSliderRow(
-                title: "Brightness",
-                value: $brightness,
+                title: "Focus Assist Level",
+                value: $focusAssistLevel,
                 range: 0...1,
                 display: { "\(Int($0 * 100))%" }
             ) { value in
-                controller.setDisplayBrightness(value)
+                controller.setPeakingLevel(value)
             }
+        }
 
+        HUDSection(title: "Display") {
             HUDSegmentedRow(
                 title: "Display LUT",
                 options: [(0, "None"), (1, "Custom"), (2, "Film to Video"), (3, "Film to Ext. Video")],
@@ -503,13 +638,6 @@ private struct MonitorSettings: View {
                     controller.setDisplayLut(selected: current.selectedLut, enabled: !current.isEnabled)
                 }
 
-                Text(state.displayLut.map { "Camera reports: \($0.label)\($0.isEnabled ? " (on)" : " (off)")" }
-                     ?? "The camera has not reported a LUT state.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(HUD.label)
-            }
-
-            HStack(spacing: 8) {
                 HUDPresetChip(
                     label: "Color Bars",
                     isSelected: (state.colorBarsSeconds ?? 0) > 0
@@ -517,29 +645,20 @@ private struct MonitorSettings: View {
                     let active = (state.colorBarsSeconds ?? 0) > 0
                     controller.setColorBars(seconds: active ? 0 : 30)
                 }
-
-                Text("Shows bars on camera outputs for 30 s")
-                    .font(.system(size: 12))
-                    .foregroundStyle(HUD.label)
             }
         }
         .onAppear(perform: syncFromCamera)
-    }
-
-    private var gridToggles: some View {
-        HStack(spacing: 8) {
-            HUDPresetChip(label: "Thirds", isSelected: state.overlays.gridFlags.contains(.thirds)) {
-                toggleGrid(.thirds)
-            }
-            HUDPresetChip(label: "Crosshair", isSelected: state.overlays.gridFlags.contains(.crosshairs)) {
-                toggleGrid(.crosshairs)
-            }
-            HUDPresetChip(label: "Center Dot", isSelected: state.overlays.gridFlags.contains(.centerDot)) {
-                toggleGrid(.centerDot)
-            }
-            HUDPresetChip(label: "Horizon", isSelected: state.overlays.gridFlags.contains(.horizon)) {
-                toggleGrid(.horizon)
-            }
+        .onChange(of: state.overlays.safeAreaPercentage) { _, newValue in
+            safeArea = Double(newValue)
+        }
+        .onChange(of: state.overlays.frameGuideOpacity) { _, newValue in
+            guideOpacity = Double(newValue)
+        }
+        .onChange(of: state.zebraLevel) { _, newValue in
+            if let newValue { zebraLevel = newValue }
+        }
+        .onChange(of: state.peakingLevel) { _, newValue in
+            if let newValue { focusAssistLevel = newValue }
         }
     }
 
@@ -555,9 +674,9 @@ private struct MonitorSettings: View {
 
     private func syncFromCamera() {
         if let value = state.zebraLevel { zebraLevel = value }
-        if let value = state.peakingLevel { peakingLevel = value }
-        if let value = state.displayBrightness { brightness = value }
+        if let value = state.peakingLevel { focusAssistLevel = value }
         guideOpacity = Double(state.overlays.frameGuideOpacity)
+        safeArea = Double(state.overlays.safeAreaPercentage)
     }
 }
 
@@ -645,6 +764,9 @@ private struct AudioSettings: View {
             }
         }
         .onAppear(perform: syncFromCamera)
+        .onChange(of: state.audio) { _, _ in
+            syncFromCamera()
+        }
     }
 
     private func syncFromCamera() {
@@ -801,20 +923,12 @@ private struct IpadSettings: View {
         HUDSection(title: "Video Feed") {
             infoRow("Incoming Feed", previewModel.feedDescription ?? "No feed")
             infoRow("Status", previewModel.status)
-
-            Text("The USB feed is the camera's fixed monitor output. It does not change with the recording format — 4K BRAW is recorded on the camera's own media, while the iPad receives a monitor-quality stream.")
-                .font(.system(size: 12))
-                .foregroundStyle(HUD.label)
         }
 
         HUDSection(title: "Record to iPad") {
-            Text("The IPAD button in the bottom bar records the incoming feed as a video file. Use it for proxies, references or client copies — not as a replacement for the camera's internal recording.")
-                .font(.system(size: 12))
-                .foregroundStyle(HUD.label)
-
             infoRow(
                 "Destination",
-                previewModel.externalDestinationName ?? "On My iPad → Blackmagic Control → Recordings"
+                previewModel.externalDestinationName ?? "On My iPad → Blackmagic Control Pro → Recordings"
             )
 
             HStack(spacing: 10) {
@@ -844,10 +958,6 @@ private struct IpadSettings: View {
                     .buttonStyle(.plain)
                 }
             }
-
-            Text("Pick a folder on a USB drive connected to the iPad to move finished recordings there automatically.")
-                .font(.system(size: 12))
-                .foregroundStyle(HUD.label)
 
             if let message = previewModel.localRecordingMessage {
                 Text(message)
@@ -1007,6 +1117,12 @@ private struct SetupSettings: View {
         .onAppear {
             if let value = state.tallyFrontBrightness { frontTally = value }
             if let value = state.tallyRearBrightness { rearTally = value }
+        }
+        .onChange(of: state.tallyFrontBrightness) { _, newValue in
+            if let newValue { frontTally = newValue }
+        }
+        .onChange(of: state.tallyRearBrightness) { _, newValue in
+            if let newValue { rearTally = newValue }
         }
     }
 
