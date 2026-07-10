@@ -84,6 +84,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         }
 
         guard granted else {
+            AppLog.preview.warning("Camera permission denied")
             errorMessage = "Camera permission denied"
             status = "Preview unavailable"
             isActive = false
@@ -115,12 +116,15 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
                 errorMessage = nil
                 isActive = true
                 feedDescription = Self.describeFeed(of: device)
+                AppLog.preview.info("Preview live: \(feedDescription ?? "unknown format")")
             case .failure(let error):
+                AppLog.preview.error("Preview session failed: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 status = "Preview unavailable"
                 isActive = false
             }
         } catch {
+            AppLog.preview.error("Preview input failed: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
             status = "Preview unavailable"
             isActive = false
@@ -129,6 +133,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
 
     func stop() {
         previewRequestID += 1
+        AppLog.preview.info("Preview stopped")
         status = "Preview stopped"
         isActive = false
         currentDeviceID = nil
@@ -148,6 +153,14 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         }
         guard !isRecordingLocally, !movieOutput.isRecording else { return }
 
+        let freeBytes = Self.freeRecordingSpace()
+        guard freeBytes >= Self.minimumFreeSpaceForRecording else {
+            let free = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
+            AppLog.recording.warning("Refused to record: only \(free) free")
+            localRecordingMessage = "Not enough free space to record — only \(free) available. Free up at least 2 GB."
+            return
+        }
+
         // Best effort audio: the BMPCC presents audio over USB on most
         // setups; fall back silently to video-only if denied/unavailable.
         let audioGranted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -156,6 +169,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         let session = session
         let movieOutput = movieOutput
         let needsAudio = audioGranted && !hasAudioInput
+        let willRecordAudio = audioGranted
         if needsAudio {
             hasAudioInput = true
         }
@@ -179,6 +193,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
                 return
             }
 
+            AppLog.recording.info("Local recording starting (audio: \(willRecordAudio))")
             movieOutput.startRecording(to: url, recordingDelegate: self)
         }
     }
@@ -224,6 +239,15 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         return url.lastPathComponent
     }
 
+    private static let minimumFreeSpaceForRecording: Int64 = 2_000_000_000
+
+    private static func freeRecordingSpace() -> Int64 {
+        let values = try? recordingsDirectory().resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        )
+        return values?.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+
     static func recordingsDirectory() -> URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let recordings = documents.appendingPathComponent("Recordings", isDirectory: true)
@@ -246,11 +270,13 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
             // normally; only surface it if no usable file was produced.
             let produced = (try? url.checkResourceIsReachable()) ?? false
             if !produced {
+                AppLog.recording.error("Recording failed: \(error.localizedDescription)")
                 localRecordingMessage = "Recording failed: \(error.localizedDescription)"
                 return
             }
         }
 
+        AppLog.recording.info("Recording finished: \(url.lastPathComponent)")
         moveToExternalDestinationIfConfigured(url)
     }
 
@@ -279,6 +305,7 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
                 try FileManager.default.removeItem(at: url)
                 result = "Saved to “\(folder.lastPathComponent)”."
             } catch {
+                AppLog.recording.error("External move failed: \(error.localizedDescription)")
                 result = "Kept in app Recordings folder (external move failed: \(error.localizedDescription))"
             }
 

@@ -36,6 +36,18 @@ struct DiscoveredCamera: Identifiable, Equatable {
     var rssi: Int
 }
 
+struct LoggedError: Identifiable, Equatable {
+    let id: UUID
+    let date: Date
+    let message: String
+
+    init(date: Date = Date(), message: String) {
+        self.id = UUID()
+        self.date = date
+        self.message = message
+    }
+}
+
 // MARK: - Controller
 
 /// Owns the whole BLE lifecycle for one Blackmagic camera: scanning,
@@ -43,11 +55,19 @@ struct DiscoveredCamera: Identifiable, Equatable {
 /// commands, persistence of the chosen camera, and automatic reconnection.
 @MainActor
 final class CameraBleController: NSObject, ObservableObject {
-    @Published private(set) var phase: ConnectionPhase = .idle
+    @Published private(set) var phase: ConnectionPhase = .idle {
+        didSet {
+            if oldValue != phase {
+                AppLog.ble.info("Connection phase: \(oldValue.label) → \(phase.label)")
+            }
+        }
+    }
     @Published private(set) var discoveredCameras: [DiscoveredCamera] = []
     @Published private(set) var camera = CameraState()
     @Published private(set) var connectedName: String?
     @Published var lastError: String?
+    /// Rolling history of surfaced errors, included in diagnostics exports.
+    @Published private(set) var errorHistory: [LoggedError] = []
     /// Set while a record start/stop command awaits confirmation from the
     /// camera's transport notification.
     @Published private(set) var pendingRecordRequest: Bool?
@@ -113,7 +133,7 @@ final class CameraBleController: NSObject, ObservableObject {
     func connect(to cameraID: UUID) {
         guard central.state == .poweredOn else { return }
         guard let target = central.retrievePeripherals(withIdentifiers: [cameraID]).first else {
-            lastError = "Camera is no longer in range."
+            reportError("Camera is no longer in range.")
             return
         }
         central.stopScan()
@@ -155,9 +175,10 @@ final class CameraBleController: NSObject, ObservableObject {
     func send(_ packet: () throws -> BlackmagicCcuPacket) {
         do {
             let packet = try packet()
+            AppLog.ccu.debug("send \(packet.bytes.map { String(format: "%02X", $0) }.joined())")
             try write(packet.bytes, to: BlackmagicBleConstants.outgoingCameraControl)
         } catch {
-            lastError = friendlyMessage(for: error)
+            reportError(friendlyMessage(for: error), category: AppLog.ccu)
         }
     }
 
@@ -176,9 +197,9 @@ final class CameraBleController: NSObject, ObservableObject {
 
             self.pendingRecordRequest = nil
             if self.camera.isRecording != recording {
-                self.lastError = recording
+                self.reportError(recording
                     ? "The camera did not start recording. Check its media and storage."
-                    : "The camera did not confirm the recording stopped."
+                    : "The camera did not confirm the recording stopped.")
             }
         }
     }
@@ -469,14 +490,18 @@ final class CameraBleController: NSObject, ObservableObject {
         do {
             try write(Data([0x00]), to: BlackmagicBleConstants.cameraStatus)
         } catch {
-            lastError = friendlyMessage(for: error)
+            reportError(friendlyMessage(for: error))
         }
     }
 
     func setCameraDisplayName(_ name: String) {
         let trimmed = String(name.prefix(32))
         guard let data = trimmed.data(using: .utf8) else { return }
-        try? write(data, to: BlackmagicBleConstants.deviceName)
+        do {
+            try write(data, to: BlackmagicBleConstants.deviceName)
+        } catch {
+            AppLog.ble.warning("Couldn't send iPad name to the camera: \(friendlyMessage(for: error))")
+        }
     }
 
     // MARK: - Connection internals
@@ -515,6 +540,19 @@ final class CameraBleController: NSObject, ObservableObject {
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
         } else {
             throw ControllerError.notReady
+        }
+    }
+
+    /// Logs an error, records it in the history for diagnostics exports, and
+    /// (optionally) surfaces it as the toast the UI shows.
+    private func reportError(_ message: String, category: AppLog.Category = AppLog.ble, toast: Bool = true) {
+        category.error(message)
+        errorHistory.append(LoggedError(message: message))
+        if errorHistory.count > 50 {
+            errorHistory.removeFirst(errorHistory.count - 50)
+        }
+        if toast {
+            lastError = message
         }
     }
 
@@ -590,6 +628,7 @@ final class CameraBleController: NSObject, ObservableObject {
         camera = CameraState()
 
         if userInitiatedDisconnect {
+            AppLog.ble.info("Disconnected at user request")
             peripheral = nil
             connectedName = nil
             phase = .idle
@@ -598,20 +637,27 @@ final class CameraBleController: NSObject, ObservableObject {
 
         // Unexpected drop: keep the peripheral and ask CoreBluetooth to
         // reconnect. The request stays pending until the camera reappears.
+        if let error {
+            reportError("Camera connection lost (\(error.localizedDescription)). Reconnecting…")
+        } else {
+            AppLog.ble.warning("Camera connection lost without an error. Reconnecting…")
+        }
         phase = .reconnecting
         central.connect(disconnected, options: nil)
     }
 
     fileprivate func handleFailedToConnect(_ failed: CBPeripheral, error: Error?) {
         guard failed.identifier == peripheral?.identifier else { return }
-        lastError = error?.localizedDescription ?? "Failed to connect to the camera."
+        reportError(error?.localizedDescription ?? "Failed to connect to the camera.")
         phase = .reconnecting
         central.connect(failed, options: nil)
     }
 
     fileprivate func handleServicesDiscovered(_ serviced: CBPeripheral, error: Error?) {
         guard error == nil, let services = serviced.services else {
-            lastError = error?.localizedDescription
+            if let error {
+                reportError("Service discovery failed: \(error.localizedDescription)")
+            }
             return
         }
         for service in services {
@@ -621,7 +667,9 @@ final class CameraBleController: NSObject, ObservableObject {
 
     fileprivate func handleCharacteristicsDiscovered(_ discovered: CBPeripheral, service: CBService, error: Error?) {
         guard error == nil, let found = service.characteristics else {
-            lastError = error?.localizedDescription
+            if let error {
+                reportError("Characteristic discovery failed: \(error.localizedDescription)")
+            }
             return
         }
 
@@ -648,7 +696,11 @@ final class CameraBleController: NSObject, ObservableObject {
             // Tell the camera who we are (shows in its Bluetooth menu) and
             // make sure it is awake.
             setCameraDisplayName(UIDevice.current.name)
-            try? write(Data([0x01]), to: BlackmagicBleConstants.cameraStatus)
+            do {
+                try write(Data([0x01]), to: BlackmagicBleConstants.cameraStatus)
+            } catch {
+                AppLog.ble.warning("Couldn't send wake command: \(friendlyMessage(for: error))")
+            }
         }
     }
 
@@ -657,9 +709,9 @@ final class CameraBleController: NSObject, ObservableObject {
             let code = (error as NSError).code
             if code == CBATTError.insufficientEncryption.rawValue
                 || code == CBATTError.insufficientAuthentication.rawValue {
-                lastError = "Pairing failed. Re-enable Bluetooth on the camera and enter the PIN it displays."
+                reportError("Pairing failed. Re-enable Bluetooth on the camera and enter the PIN it displays.")
             } else {
-                lastError = error.localizedDescription
+                reportError(error.localizedDescription)
             }
             return
         }
@@ -672,7 +724,13 @@ final class CameraBleController: NSObject, ObservableObject {
     }
 
     fileprivate func handleValueUpdate(_ characteristic: CBCharacteristic, error: Error?) {
-        guard error == nil, let data = characteristic.value else { return }
+        if let error {
+            // Logged and kept in history, but not toasted: value updates can
+            // arrive many times per second and would spam the UI.
+            reportError("Camera data error: \(error.localizedDescription)", toast: false)
+            return
+        }
+        guard let data = characteristic.value else { return }
 
         switch characteristic.uuid {
         case BlackmagicBleConstants.incomingCameraControl:
@@ -705,6 +763,11 @@ final class CameraBleController: NSObject, ObservableObject {
         default:
             break
         }
+    }
+
+    fileprivate func handleWriteResult(_ characteristic: CBCharacteristic, error: Error?) {
+        guard let error else { return }
+        reportError("The camera rejected a command: \(error.localizedDescription)", category: AppLog.ccu)
     }
 }
 
@@ -774,5 +837,13 @@ extension CameraBleController: CBPeripheralDelegate {
         error: Error?
     ) {
         MainActor.assumeIsolated { handleValueUpdate(characteristic, error: error) }
+    }
+
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didWriteValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        MainActor.assumeIsolated { handleWriteResult(characteristic, error: error) }
     }
 }
