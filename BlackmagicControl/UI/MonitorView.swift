@@ -3,6 +3,7 @@ import SwiftUI
 struct MonitorView: View {
     @ObservedObject var controller: CameraBleController
     @ObservedObject var previewModel: ExternalCameraPreviewModel
+    @ObservedObject var diagnosticsHub: DiagnosticsHub
 
     @State private var selectedParameter: HUDParameter?
     @State private var showFocusPanel = false
@@ -126,7 +127,11 @@ struct MonitorView: View {
             PairingView(controller: controller)
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(controller: controller, previewModel: previewModel)
+            SettingsView(
+                controller: controller,
+                previewModel: previewModel,
+                diagnosticsHub: diagnosticsHub
+            )
         }
         .task {
             guard !startedPreview else { return }

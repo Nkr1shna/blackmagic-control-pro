@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Camera settings sheet, organised like the on-camera menu: Record,
-/// Monitor, Audio, Color and Setup tabs. Every control here sends CCU
-/// commands over Bluetooth and reflects the state reported by the camera.
+/// Monitor, Audio, Color, Setup and About tabs. Camera controls here send
+/// CCU commands over Bluetooth and reflect the state reported by the camera.
 struct SettingsView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case record = "Record"
@@ -11,12 +11,14 @@ struct SettingsView: View {
         case color = "Color"
         case setup = "Setup"
         case ipad = "iPad"
+        case about = "About"
 
         var id: String { rawValue }
     }
 
     @ObservedObject var controller: CameraBleController
     @ObservedObject var previewModel: ExternalCameraPreviewModel
+    @ObservedObject var diagnosticsHub: DiagnosticsHub
     @Environment(\.dismiss) private var dismiss
     @State private var tab: Tab = .record
 
@@ -42,6 +44,12 @@ struct SettingsView: View {
                     case .color: ColorSettings(controller: controller)
                     case .setup: SetupSettings(controller: controller)
                     case .ipad: IpadSettings(previewModel: previewModel)
+                    case .about:
+                        AboutSettings(
+                            controller: controller,
+                            previewModel: previewModel,
+                            diagnosticsHub: diagnosticsHub
+                        )
                     }
                 }
                 .padding(16)
@@ -86,6 +94,161 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 16)
+    }
+}
+
+// MARK: - About
+
+private struct AboutSettings: View {
+    @ObservedObject var controller: CameraBleController
+    @ObservedObject var previewModel: ExternalCameraPreviewModel
+    @ObservedObject var diagnosticsHub: DiagnosticsHub
+
+    @State private var isExporting = false
+    @State private var diagnosticsURL: URL?
+    @State private var exportError: String?
+
+    private let legalDisclaimer = "Blackmagic Control Pro is an independent app. It is not affiliated with, endorsed by, sponsored by, or supported by Blackmagic Design Pty Ltd. “Blackmagic” and “Blackmagic Design” are trademarks of Blackmagic Design Pty Ltd, referenced only to describe camera compatibility. This app stores recordings and settings only on this iPad and sends no data anywhere. Alpha software — expect bugs; use at your own risk."
+
+    var body: some View {
+        HUDSection(title: "App") {
+            infoRow("Version", bundleValue(for: "CFBundleShortVersionString"))
+            infoRow("Build", buildDescription)
+            channelRow
+        }
+
+        HUDSection(title: "Support") {
+            infoRow("Contact", "krishnanelloore@gmail.com")
+
+            Text("Found a bug? Export diagnostics and email them — it takes one tap.")
+                .font(.system(size: 12))
+                .foregroundStyle(HUD.label)
+
+            HStack(spacing: 10) {
+                Button(action: exportDiagnostics) {
+                    Label("Export Diagnostics", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(HUD.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(HUD.tileHighlight, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(isExporting)
+
+                if isExporting {
+                    ProgressView()
+                        .tint(HUD.accent)
+                }
+
+                if let diagnosticsURL {
+                    ShareLink(item: diagnosticsURL) {
+                        Label("Share", systemImage: "paperplane")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(HUD.value)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(HUD.tileHighlight, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if let exportError {
+                Text(exportError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(HUD.record)
+            }
+        }
+
+        HUDSection(title: "Legal") {
+            Text(legalDisclaimer)
+                .font(.system(size: 11))
+                .foregroundStyle(HUD.label)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        HUDSection(title: "Compatibility") {
+            infoRow(
+                "Camera",
+                "Designed for Blackmagic Pocket Cinema Camera 4K/6K over Bluetooth + USB monitor feed. Other models may work but are untested."
+            )
+        }
+    }
+
+    private var buildDescription: String {
+        let build = bundleValue(for: "CFBundleVersion")
+        guard let sha = Bundle.main.object(forInfoDictionaryKey: "KNBuildSHA") as? String,
+              !sha.isEmpty else {
+            return build
+        }
+        return "\(build) (\(sha))"
+    }
+
+    private func bundleValue(for key: String) -> String {
+        Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "—"
+    }
+
+    private func exportDiagnostics() {
+        isExporting = true
+        diagnosticsURL = nil
+        exportError = nil
+
+        Task { @MainActor in
+            await Task.yield()
+
+            let snapshot = DiagnosticsSnapshot(
+                blePhase: controller.phase.label,
+                recentErrors: controller.errorHistory.map {
+                    "\($0.date.formatted(.iso8601)) \($0.message)"
+                },
+                cameraModel: controller.camera.modelName,
+                ccuProtocolVersion: controller.camera.protocolVersion,
+                feedFormat: previewModel.feedDescription
+            )
+
+            do {
+                diagnosticsURL = try diagnosticsHub.exportDiagnostics(snapshot: snapshot)
+            } catch {
+                exportError = error.localizedDescription
+            }
+            isExporting = false
+        }
+    }
+
+    private func infoRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title.uppercased())
+                .font(HUD.labelFont())
+                .foregroundStyle(HUD.label)
+                .tracking(1)
+
+            Spacer(minLength: 16)
+
+            Text(value)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(HUD.value)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var channelRow: some View {
+        HStack {
+            Text("CHANNEL")
+                .font(HUD.labelFont())
+                .foregroundStyle(HUD.label)
+                .tracking(1)
+
+            Spacer()
+
+            Text("Alpha")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(HUD.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
     }
 }
 

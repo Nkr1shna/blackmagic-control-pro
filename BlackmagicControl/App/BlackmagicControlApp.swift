@@ -8,7 +8,8 @@ struct BlackmagicControlApp: App {
         WindowGroup {
             MonitorView(
                 controller: container.cameraController,
-                previewModel: container.previewModel
+                previewModel: container.previewModel,
+                diagnosticsHub: container.diagnosticsHub
             )
         }
     }

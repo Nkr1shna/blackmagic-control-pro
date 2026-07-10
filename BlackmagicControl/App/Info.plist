@@ -33,7 +33,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Camera access is required to preview the connected Blackmagic camera feed.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Microphone access lets iPad recordings include audio from the connected camera.</string>
+	<string>Audio for iPad recordings comes from the connected camera when available; otherwise the iPad microphone may be used.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>
