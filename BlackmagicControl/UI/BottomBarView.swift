@@ -1,12 +1,26 @@
 import SwiftUI
 
 /// Local (iPad-side) monitoring preferences.
-struct LocalMonitorPrefs: Equatable {
+struct LocalMonitorPrefs: Equatable, Codable {
     var frameGuideStyle: Int8 = 0
     var showThirds = false
     var showCrosshair = false
     var showCenterDot = false
     var safeAreaPercentage: Int = 0
+
+    private static let defaultsKey = "LocalMonitorPrefs"
+
+    static func load(from defaults: UserDefaults = .standard) -> LocalMonitorPrefs {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let prefs = try? JSONDecoder().decode(LocalMonitorPrefs.self, from: data)
+        else { return LocalMonitorPrefs() }
+        return prefs
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
 }
 
 struct BottomBarView: View {

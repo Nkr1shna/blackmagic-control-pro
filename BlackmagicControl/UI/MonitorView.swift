@@ -9,7 +9,7 @@ struct MonitorView: View {
     @State private var showFocusPanel = false
     @State private var showPairing = false
     @State private var showSettings = false
-    @State private var monitorPrefs = LocalMonitorPrefs()
+    @State private var monitorPrefs = LocalMonitorPrefs.load()
     @State private var hudHidden = false
     @State private var startedPreview = false
 
@@ -160,6 +160,9 @@ struct MonitorView: View {
                     controller.lastError = nil
                 }
             }
+        }
+        .onChange(of: monitorPrefs) { _, newValue in
+            newValue.save()
         }
     }
 
