@@ -20,29 +20,26 @@
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
+  <key>UILaunchScreen</key>
+  <dict/>
+  <key>UIRequiresFullScreen</key>
+  <true/>
   <key>NSCameraUsageDescription</key>
   <string>Camera access is required to preview the connected Blackmagic camera feed.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Microphone access lets iPad recordings include audio from the connected camera.</string>
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Bluetooth access is required to pair with and control the Blackmagic camera.</string>
   <key>NSBluetoothPeripheralUsageDescription</key>
   <string>Bluetooth access is required to pair with and control the Blackmagic camera.</string>
-  <key>NSLocalNetworkUsageDescription</key>
-  <string>Local network access is required to control the Blackmagic camera over its REST API.</string>
-  <key>NSAppTransportSecurity</key>
-  <dict>
-    <key>NSAllowsLocalNetworking</key>
-    <true/>
-  </dict>
-  <key>NSBonjourServices</key>
-  <array>
-    <string>_http._tcp</string>
-  </array>
   <key>UISupportedInterfaceOrientations~ipad</key>
   <array>
     <string>UIInterfaceOrientationLandscapeLeft</string>
     <string>UIInterfaceOrientationLandscapeRight</string>
-    <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationPortraitUpsideDown</string>
   </array>
 </dict>
 </plist>

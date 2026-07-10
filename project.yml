@@ -23,5 +23,21 @@ targets:
     platform: iOS
     sources:
       - BlackmagicControlTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: BlackmagicControl
+schemes:
+  BlackmagicControl:
+    build:
+      targets:
+        BlackmagicControl: all
+        BlackmagicControlTests: [test]
+    run:
+      config: Debug
+      executable: BlackmagicControl
+    test:
+      config: Debug
+      targets:
+        - BlackmagicControlTests

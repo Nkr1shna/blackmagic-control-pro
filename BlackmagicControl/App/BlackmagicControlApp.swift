@@ -6,7 +6,10 @@ struct BlackmagicControlApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MonitorView(store: container.store, previewModel: container.previewModel)
+            MonitorView(
+                controller: container.cameraController,
+                previewModel: container.previewModel
+            )
         }
     }
 }
