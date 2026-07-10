@@ -8,3 +8,4 @@ DerivedData/
 *.moved-aside
 .DS_Store
 build/
+dist/
