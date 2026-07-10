@@ -64,24 +64,31 @@ final class DiagnosticsExporter {
             try fileManager.removeItem(at: zipURL)
         }
 
+        // The zip the coordinator provides only exists for the duration of
+        // the accessor block, so it must be copied out inside the block.
         var coordinationError: NSError?
-        var coordinatedArchiveURL: URL?
+        var copyError: Error?
         NSFileCoordinator().coordinate(
             readingItemAt: folderURL,
             options: .forUploading,
             error: &coordinationError
         ) { archiveURL in
-            coordinatedArchiveURL = archiveURL
+            do {
+                try fileManager.copyItem(at: archiveURL, to: zipURL)
+            } catch {
+                copyError = error
+            }
         }
 
         if let coordinationError {
             throw coordinationError
         }
-        guard let coordinatedArchiveURL else {
+        if let copyError {
+            throw copyError
+        }
+        guard fileManager.fileExists(atPath: zipURL.path) else {
             throw CocoaError(.fileReadUnknown)
         }
-
-        try fileManager.copyItem(at: coordinatedArchiveURL, to: zipURL)
         return zipURL
     }
 

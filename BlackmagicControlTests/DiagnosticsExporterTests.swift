@@ -75,6 +75,28 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(journalExport.contains("[REDACTED] connected"))
     }
 
+    func testExportProducesReadableZipEvenWithoutCrashes() throws {
+        let diagnosticsURL = temporaryDirectory.appendingPathComponent("Diagnostics")
+        let journal = LogJournal(directoryURL: diagnosticsURL)
+        journal.append("2026-07-10T12:34:56Z [ble] INFO connected")
+        let exporter = DiagnosticsExporter(
+            journal: journal,
+            crashesDirectoryURL: diagnosticsURL.appendingPathComponent("Crashes"),
+            fileManager: .default
+        )
+
+        let zipURL = try exporter.export(snapshot: testSnapshot)
+        addTeardownBlock { try? FileManager.default.removeItem(at: zipURL) }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: zipURL.path))
+        let size = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: zipURL.path)[.size] as? Int
+        )
+        XCTAssertGreaterThan(size, 0)
+        let data = try Data(contentsOf: zipURL)
+        XCTAssertEqual(data.prefix(2), Data("PK".utf8))
+    }
+
     private var testSnapshot: DiagnosticsSnapshot {
         DiagnosticsSnapshot(
             blePhase: "Connected",
