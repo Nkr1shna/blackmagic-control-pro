@@ -19,9 +19,9 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>19</string>
+	<string>27</string>
 	<key>KNBuildSHA</key>
-	<string>20160b2</string>
+	<string>e5e16d6</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
