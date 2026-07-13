@@ -174,13 +174,37 @@ struct HUDOptionTile: View {
 
 // MARK: - Labeled slider row (settings + panels)
 
-struct HUDSliderRow: View {
+struct HUDCameraSlider: View {
     let title: String
-    @Binding var value: Double
-    var range: ClosedRange<Double> = 0...1
-    var step: Double?
-    var display: ((Double) -> String)?
-    var onCommit: (Double) -> Void
+    let value: Double?
+    let range: ClosedRange<Double>
+    let step: Double?
+    let display: ((Double) -> String)?
+    let onCommit: (Double) -> Void
+
+    @State private var localValue: Double
+    @State private var isDragging = false
+
+    init(
+        title: String,
+        value: Double?,
+        range: ClosedRange<Double> = 0...1,
+        step: Double? = nil,
+        defaultValue: Double? = nil,
+        display: ((Double) -> String)? = nil,
+        onCommit: @escaping (Double) -> Void
+    ) {
+        self.title = title
+        self.value = value
+        self.range = range
+        self.step = step
+        self.display = display
+        self.onCommit = onCommit
+        let initialValue = value ?? defaultValue ?? range.lowerBound
+        _localValue = State(
+            initialValue: min(max(initialValue, range.lowerBound), range.upperBound)
+        )
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -193,32 +217,100 @@ struct HUDSliderRow: View {
             slider
                 .tint(HUD.accent)
 
-            Text(display?(value) ?? value.formatted(.number.precision(.fractionLength(2))))
+            Text(display?(localValue) ?? localValue.formatted(.number.precision(.fractionLength(2))))
                 .font(.system(size: 13, weight: .medium).monospacedDigit())
                 .foregroundStyle(HUD.value)
                 .frame(width: 56, alignment: .trailing)
         }
+        .onAppear { syncFromCamera() }
+        .onChange(of: value) { _, _ in syncFromCamera() }
     }
 
     @ViewBuilder
     private var slider: some View {
         if let step {
-            Slider(value: $value, in: range, step: step) { editing in
+            Slider(value: $localValue, in: range, step: step, onEditingChanged: editingChanged)
+        } else {
+            Slider(value: $localValue, in: range, onEditingChanged: editingChanged)
+        }
+    }
+
+    private func editingChanged(_ editing: Bool) {
+        isDragging = editing
+        if !editing {
+            onCommit(localValue)
+        }
+    }
+
+    private func syncFromCamera() {
+        guard !isDragging, let value else { return }
+        localValue = min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
+struct ColorScalarSlider: View {
+    let title: String
+    let value: Double
+    let range: ClosedRange<Double>
+    let onCommit: (Double) -> Void
+
+    @State private var localValue: Double = 0
+    @State private var isDragging = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title.uppercased())
+                .font(HUD.labelFont(9))
+                .foregroundStyle(HUD.label)
+                .tracking(1)
+                .frame(width: 76, alignment: .leading)
+
+            Slider(value: $localValue, in: range) { editing in
+                isDragging = editing
                 if !editing {
-                    onCommit(value)
+                    onCommit(localValue)
                 }
             }
-        } else {
-            Slider(value: $value, in: range) { editing in
-                if !editing {
-                    onCommit(value)
-                }
+            .tint(HUD.accent)
+
+            Text(localValue.formatted(.number.precision(.fractionLength(2))))
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(HUD.value)
+                .frame(width: 48, alignment: .trailing)
+        }
+        .onAppear { localValue = value }
+        .onChange(of: value) { _, newValue in
+            if !isDragging {
+                localValue = newValue
             }
         }
     }
 }
 
 // MARK: - Settings list helpers
+
+struct HUDInfoRow: View {
+    let title: String
+    let value: String
+    var multiline = false
+
+    var body: some View {
+        HStack(alignment: multiline ? .firstTextBaseline : .center) {
+            Text(title.uppercased())
+                .font(HUD.labelFont())
+                .foregroundStyle(HUD.label)
+                .tracking(1)
+
+            Spacer(minLength: multiline ? 16 : 0)
+
+            Text(value)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(HUD.value)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: multiline)
+        }
+    }
+}
 
 struct HUDSection<Content: View>: View {
     let title: String

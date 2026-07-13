@@ -87,7 +87,10 @@ private struct IsoPanel: View {
 
 private struct ShutterPanel: View {
     @ObservedObject var controller: CameraBleController
-    @State private var angle: Double = 180
+
+    private var angle: Double? {
+        controller.camera.shutterAngleHundredths.map { Double($0) / 100 }
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -98,25 +101,20 @@ private struct ShutterPanel: View {
                             label: CameraState.shutterAngleLabel(hundredths: Int32(preset * 100)),
                             isSelected: isCurrent(preset)
                         ) {
-                            angle = preset
                             controller.setShutterAngle(degrees: preset)
                         }
                     }
                 }
             }
 
-            HUDSliderRow(
+            HUDCameraSlider(
                 title: "Angle",
-                value: $angle,
+                value: angle,
                 range: 5...360,
+                defaultValue: 180,
                 display: { String(format: "%.1f°", $0) }
             ) { value in
                 controller.setShutterAngle(degrees: value)
-            }
-        }
-        .onAppear {
-            if let hundredths = controller.camera.shutterAngleHundredths {
-                angle = Double(hundredths) / 100
             }
         }
     }
@@ -131,14 +129,14 @@ private struct ShutterPanel: View {
 
 private struct IrisPanel: View {
     @ObservedObject var controller: CameraBleController
-    @State private var normalised: Double = 0.5
 
     var body: some View {
         VStack(spacing: 12) {
-            HUDSliderRow(
+            HUDCameraSlider(
                 title: "Aperture",
-                value: $normalised,
+                value: controller.camera.apertureNormalised,
                 range: 0...1,
+                defaultValue: 0.5,
                 display: { _ in controller.camera.irisLabel }
             ) { value in
                 controller.setApertureNormalised(value)
@@ -158,14 +156,6 @@ private struct IrisPanel: View {
                 Spacer()
             }
         }
-        .onAppear {
-            if let value = controller.camera.apertureNormalised {
-                normalised = value
-            }
-        }
-        .onChange(of: controller.camera.apertureNormalised) { _, newValue in
-            if let newValue { normalised = newValue }
-        }
     }
 }
 
@@ -173,16 +163,12 @@ private struct IrisPanel: View {
 
 private struct WhiteBalancePanel: View {
     @ObservedObject var controller: CameraBleController
-    @State private var kelvin: Double = 5600
-    @State private var tint: Double = 0
 
     var body: some View {
         VStack(spacing: 12) {
             HStack(spacing: 6) {
                 ForEach(CameraPresets.whiteBalancePresets, id: \.kelvin) { preset in
                     Button {
-                        kelvin = Double(preset.kelvin)
-                        tint = Double(preset.tint)
                         controller.setWhiteBalance(kelvin: preset.kelvin, tint: preset.tint)
                     } label: {
                         VStack(spacing: 3) {
@@ -206,31 +192,32 @@ private struct WhiteBalancePanel: View {
                 }
             }
 
-            HUDSliderRow(
+            HUDCameraSlider(
                 title: "Temp",
-                value: $kelvin,
+                value: controller.camera.whiteBalanceKelvin.map(Double.init),
                 range: 2500...10000,
+                defaultValue: 5600,
                 display: { "\(Int($0 / 50) * 50)K" }
             ) { value in
-                controller.setWhiteBalance(kelvin: Int(value / 50) * 50, tint: Int(tint))
+                controller.setWhiteBalance(
+                    kelvin: Int(value / 50) * 50,
+                    tint: controller.camera.tint ?? 0
+                )
             }
 
-            HUDSliderRow(
+            HUDCameraSlider(
                 title: "Tint",
-                value: $tint,
+                value: controller.camera.tint.map(Double.init),
                 range: -50...50,
+                defaultValue: 0,
                 display: { "\(Int($0))" }
             ) { value in
-                controller.setWhiteBalance(kelvin: Int(kelvin / 50) * 50, tint: Int(value))
+                controller.setWhiteBalance(
+                    kelvin: controller.camera.whiteBalanceKelvin ?? 5600,
+                    tint: Int(value)
+                )
             }
         }
-        .onAppear(perform: syncFromCamera)
-        .onChange(of: controller.camera.whiteBalanceKelvin) { _, _ in syncFromCamera() }
-    }
-
-    private func syncFromCamera() {
-        if let value = controller.camera.whiteBalanceKelvin { kelvin = Double(value) }
-        if let value = controller.camera.tint { tint = Double(value) }
     }
 }
 
@@ -273,7 +260,7 @@ struct FocusPanelView: View {
     @Binding var focusMarks: [FocusMark]
     let onClose: () -> Void
 
-    @State private var focus: Double = 0.5
+    private var focus: Double { controller.camera.focusNormalised ?? 0.5 }
 
     private var alreadyMarked: Bool {
         focusMarks.contains { abs($0.position - focus) < 0.01 }
@@ -300,10 +287,11 @@ struct FocusPanelView: View {
                 .accessibilityLabel("Close focus panel")
             }
 
-            HUDSliderRow(
+            HUDCameraSlider(
                 title: "Near ⟷ Far",
-                value: $focus,
-                range: 0...1
+                value: controller.camera.focusNormalised,
+                range: 0...1,
+                defaultValue: 0.5
             ) { value in
                 controller.setFocus(value)
             }
@@ -337,11 +325,6 @@ struct FocusPanelView: View {
         )
         .padding(.horizontal, 16)
         .transition(.move(edge: .bottom).combined(with: .opacity))
-        .onAppear {
-            if let value = controller.camera.focusNormalised {
-                focus = value
-            }
-        }
     }
 
     // MARK: Focus marks
@@ -400,9 +383,8 @@ struct FocusPanelView: View {
 
     private func recall(_ mark: FocusMark) {
         withAnimation(.easeInOut(duration: 0.2)) {
-            focus = mark.position
+            controller.setFocus(mark.position)
         }
-        controller.setFocus(mark.position)
     }
 
     private func deleteMark(_ mark: FocusMark) {

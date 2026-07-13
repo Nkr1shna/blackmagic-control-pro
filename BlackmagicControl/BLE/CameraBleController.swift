@@ -36,6 +36,21 @@ struct DiscoveredCamera: Identifiable, Equatable {
     var rssi: Int
 }
 
+enum DiscoveredCameraList {
+    static func updating(
+        _ cameras: [DiscoveredCamera],
+        with entry: DiscoveredCamera
+    ) -> [DiscoveredCamera] {
+        var updated = cameras
+        if let index = updated.firstIndex(where: { $0.id == entry.id }) {
+            updated[index] = entry
+        } else {
+            updated.append(entry)
+        }
+        return updated
+    }
+}
+
 struct LoggedError: Identifiable, Equatable {
     let id: UUID
     let date: Date
@@ -55,39 +70,41 @@ struct LoggedError: Identifiable, Equatable {
 /// commands, persistence of the chosen camera, and automatic reconnection.
 @MainActor
 final class CameraBleController: NSObject, ObservableObject {
-    @Published private(set) var phase: ConnectionPhase = .idle {
+    @Published var phase: ConnectionPhase = .idle {
         didSet {
             if oldValue != phase {
                 AppLog.ble.info("Connection phase: \(oldValue.label) → \(phase.label)")
             }
         }
     }
-    @Published private(set) var discoveredCameras: [DiscoveredCamera] = []
-    @Published private(set) var camera = CameraState()
-    @Published private(set) var connectedName: String?
+    @Published var discoveredCameras: [DiscoveredCamera] = []
+    @Published var camera = CameraState()
+    @Published var connectedName: String?
     @Published var lastError: String?
+    @Published private(set) var errorToastID: UInt = 0
     /// Rolling history of surfaced errors, included in diagnostics exports.
     @Published private(set) var errorHistory: [LoggedError] = []
     /// Set while a record start/stop command awaits confirmation from the
     /// camera's transport notification.
-    @Published private(set) var pendingRecordRequest: Bool?
+    @Published var pendingRecordRequest: Bool?
 
-    private var recordConfirmationTask: Task<Void, Never>?
+    var recordConfirmationTask: Task<Void, Never>?
 
     var hasSavedCamera: Bool { savedCameraID != nil }
     var savedCameraName: String? { defaults.string(forKey: Self.savedNameKey) }
 
-    private static let savedIDKey = "CameraBleController.savedCameraID"
-    private static let savedNameKey = "CameraBleController.savedCameraName"
+    static let savedIDKey = "CameraBleController.savedCameraID"
+    static let savedNameKey = "CameraBleController.savedCameraName"
 
-    private let defaults = UserDefaults.standard
-    private var central: CBCentralManager!
-    private var peripheral: CBPeripheral?
-    private var characteristics: [CBUUID: CBCharacteristic] = [:]
-    private var userInitiatedDisconnect = false
-    private var wantsScan = false
+    let defaults = UserDefaults.standard
+    var central: CBCentralManager!
+    var peripheral: CBPeripheral?
+    var characteristics: [CBUUID: CBCharacteristic] = [:]
+    var userInitiatedDisconnect = false
+    var wantsScan = false
+    var rediscoveringSavedCamera = false
 
-    private var savedCameraID: UUID? {
+    var savedCameraID: UUID? {
         get { defaults.string(forKey: Self.savedIDKey).flatMap(UUID.init(uuidString:)) }
         set {
             if let newValue {
@@ -108,6 +125,10 @@ final class CameraBleController: NSObject, ObservableObject {
 
     func startScan() {
         wantsScan = true
+        beginScan()
+    }
+
+    private func beginScan() {
         discoveredCameras = []
         guard central.state == .poweredOn else { return }
         guard peripheral?.state != .connected else { return }
@@ -122,11 +143,12 @@ final class CameraBleController: NSObject, ObservableObject {
 
     func stopScan() {
         wantsScan = false
+        guard !rediscoveringSavedCamera else { return }
         if central.state == .poweredOn {
             central.stopScan()
         }
         if phase == .scanning {
-            phase = savedCameraID == nil ? .idle : phase
+            phase = .idle
         }
     }
 
@@ -136,6 +158,7 @@ final class CameraBleController: NSObject, ObservableObject {
             reportError("Camera is no longer in range.")
             return
         }
+        rediscoveringSavedCamera = false
         central.stopScan()
         connect(peripheral: target)
     }
@@ -144,7 +167,7 @@ final class CameraBleController: NSObject, ObservableObject {
     func disconnect() {
         userInitiatedDisconnect = true
         cancelConnection()
-        phase = savedCameraID == nil ? .idle : .idle
+        phase = .idle
     }
 
     /// Disconnects and forgets the saved camera entirely.
@@ -166,437 +189,41 @@ final class CameraBleController: NSObject, ObservableObject {
             connect(peripheral: target)
         } else {
             // Identifier unknown to this central — rediscover by scanning.
-            startScan()
+            rediscoveringSavedCamera = true
+            beginScan()
         }
     }
 
-    // MARK: - Commands
+    // MARK: - Sending
 
-    func send(_ packet: () throws -> BlackmagicCcuPacket) {
+    @discardableResult
+    func send(_ packet: () throws -> BlackmagicCcuPacket) -> Bool {
         do {
             let packet = try packet()
             AppLog.ccu.debug("send \(packet.bytes.map { String(format: "%02X", $0) }.joined())")
             try write(packet.bytes, to: BlackmagicBleConstants.outgoingCameraControl)
+            return true
         } catch {
             reportError(friendlyMessage(for: error), category: AppLog.ccu)
+            return false
         }
     }
 
-    /// Record state is NOT applied optimistically: the button reflects only
-    /// what the camera confirms via its transport-mode notification. If no
-    /// confirmation arrives (no media, full card, …) a warning is surfaced.
-    func setRecording(_ recording: Bool) {
-        send { try CcuCommand.record(recording) }
-        pendingRecordRequest = recording
-
-        recordConfirmationTask?.cancel()
-        recordConfirmationTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, !Task.isCancelled else { return }
-            guard self.pendingRecordRequest == recording else { return }
-
-            self.pendingRecordRequest = nil
-            if self.camera.isRecording != recording {
-                self.reportError(recording
-                    ? "The camera did not start recording. Check its media and storage."
-                    : "The camera did not confirm the recording stopped.")
-            }
-        }
-    }
-
-    func setISO(_ iso: Int) {
-        send { try CcuCommand.iso(Int32(clamping: iso)) }
-        camera.iso = iso
-    }
-
-    func setGain(decibels: Int) {
-        send { try CcuCommand.gain(decibels: Int8(clamping: decibels)) }
-        camera.gainDb = decibels
-    }
-
-    func setShutterAngle(degrees: Double) {
-        let hundredths = Int32((degrees * 100).rounded())
-        send { try CcuCommand.shutterAngle(hundredths: hundredths) }
-        camera.shutterAngleHundredths = hundredths
-        camera.shutterSpeedFraction = nil
-    }
-
-    func setShutterSpeed(fraction: Int) {
-        send { try CcuCommand.shutterSpeed(fraction: Int32(clamping: fraction)) }
-        camera.shutterSpeedFraction = Int32(clamping: fraction)
-        camera.shutterAngleHundredths = nil
-    }
-
-    func setWhiteBalance(kelvin: Int, tint: Int) {
-        send {
-            try CcuCommand.whiteBalance(
-                kelvin: Int16(clamping: kelvin),
-                tint: Int16(clamping: tint)
-            )
-        }
-        camera.whiteBalanceKelvin = kelvin
-        camera.tint = tint
-    }
-
-    func triggerAutoWhiteBalance() {
-        send { try CcuCommand.autoWhiteBalance() }
-    }
-
-    func restoreAutoWhiteBalance() {
-        send { try CcuCommand.restoreAutoWhiteBalance() }
-    }
-
-    func setFocus(_ normalised: Double) {
-        send { try CcuCommand.focus(normalised) }
-        camera.focusNormalised = normalised
-    }
-
-    func nudgeFocus(by delta: Double) {
-        send { try CcuCommand.focusOffset(delta) }
-    }
-
-    func triggerAutoFocus() {
-        send { try CcuCommand.instantaneousAutoFocus() }
-    }
-
-    func setApertureNormalised(_ normalised: Double) {
-        send { try CcuCommand.apertureNormalised(normalised) }
-        camera.apertureNormalised = normalised
-    }
-
-    func triggerAutoAperture() {
-        send { try CcuCommand.instantaneousAutoAperture() }
-    }
-
-    func setOpticalImageStabilisation(_ enabled: Bool) {
-        send { try CcuCommand.opticalImageStabilisation(enabled) }
-        camera.opticalImageStabilisation = enabled
-    }
-
-    func setFrameRate(fps: Int, mRate: Bool) {
-        guard var format = camera.recordingFormat else {
-            lastError = "Waiting for the camera to report its recording format."
-            return
-        }
-        format.fileFrameRate = fps
-        format.sensorFrameRate = 0 // 0 = leave sensor rate unchanged
-        if mRate {
-            format.flags.insert(.fileMRate)
-        } else {
-            format.flags.remove(.fileMRate)
-        }
-        send { try CcuCommand.recordingFormat(format) }
-        format.sensorFrameRate = camera.recordingFormat?.sensorFrameRate ?? 0
-        camera.recordingFormat = format
-    }
-
-    func setResolution(width: Int, height: Int) {
-        guard var format = camera.recordingFormat else {
-            lastError = "Waiting for the camera to report its recording format."
-            return
-        }
-        format.width = width
-        format.height = height
-        if width < 3800 {
-            format.flags.insert(.windowed)
-        } else {
-            format.flags.remove(.windowed)
-        }
-        send { try CcuCommand.recordingFormat(format) }
-        camera.recordingFormat = format
-    }
-
-    func setSensorAreaWindowed(_ windowed: Bool) {
-        guard var format = camera.recordingFormat else {
-            lastError = "Waiting for the camera to report its recording format."
-            return
-        }
-        if windowed {
-            format.flags.insert(.windowed)
-        } else {
-            format.flags.remove(.windowed)
-        }
-        send { try CcuCommand.recordingFormat(format) }
-        camera.recordingFormat = format
-    }
-
-    func setOffSpeedRecording(_ enabled: Bool) {
-        guard var format = camera.recordingFormat else {
-            lastError = "Waiting for the camera to report its recording format."
-            return
-        }
-        if enabled {
-            format.flags.insert(.sensorOffSpeed)
-            if format.sensorFrameRate <= 0 {
-                format.sensorFrameRate = format.fileFrameRate
-            }
-        } else {
-            format.flags.remove(.sensorOffSpeed)
-        }
-        send { try CcuCommand.recordingFormat(format) }
-        camera.recordingFormat = format
-    }
-
-    func setOffSpeedFrameRate(fps: Int) {
-        guard var format = camera.recordingFormat else {
-            lastError = "Waiting for the camera to report its recording format."
-            return
-        }
-        format.sensorFrameRate = fps
-        format.flags.remove(.sensorMRate)
-        send { try CcuCommand.recordingFormat(format) }
-        camera.recordingFormat = format
-    }
-
-    func setCodec(_ codec: BasicCodec, variant: UInt8) {
-        send { try CcuCommand.codec(CodecInfo(codec: codec, variant: variant)) }
-        camera.codec = CodecInfo(codec: codec, variant: variant)
-    }
-
-    func setTimelapseRecording(_ enabled: Bool) {
-        guard var transport = camera.transport else {
-            lastError = "Waiting for the camera to report its transport state."
-            return
-        }
-        if enabled {
-            transport.flags.insert(.timeLapse)
-        } else {
-            transport.flags.remove(.timeLapse)
-        }
-        send {
-            try CcuCommand.transportMode(
-                transport.mode,
-                speed: transport.speed,
-                flags: transport.flags,
-                slot1: transport.slot1Medium,
-                slot2: transport.slot2Medium
-            )
-        }
-        camera.transport = transport
-    }
-
-    func setDynamicRange(_ mode: DynamicRangeMode) {
-        send { try CcuCommand.dynamicRange(mode) }
-        camera.dynamicRange = mode
-    }
-
-    func setSharpening(_ level: SharpeningLevel) {
-        send { try CcuCommand.sharpening(level) }
-        camera.sharpening = level
-    }
-
-    func setAutoExposureMode(_ mode: AutoExposureMode) {
-        send { try CcuCommand.autoExposureMode(mode) }
-        camera.autoExposureMode = mode
-    }
-
-    /// Deliberately not applied optimistically: the row highlights only what
-    /// the camera echoes back, so an ignored command is visible to the user.
-    func setDisplayLut(selected: Int, enabled: Bool) {
-        send { try CcuCommand.displayLut(selected: Int8(clamping: selected), enabled: enabled) }
-    }
-
-    func setOverlays(_ overlays: OverlayState) {
-        send { try CcuCommand.overlays(overlays) }
-        camera.overlays = overlays
-    }
-
-    /// Selecting a frame guide style also enables frame guide drawing on the
-    /// camera outputs (3.0), because the style alone (3.3) never turns
-    /// guides on. Style 0 turns them off both ways.
-    func setFrameGuideStyle(_ style: Int8) {
-        var overlays = camera.overlays
-        overlays.frameGuideStyle = style
-        setOverlays(overlays)
-
-        var enables = camera.overlayEnables ?? OverlayEnables()
-        if style > 0 {
-            enables.overlays.insert(.frameGuides)
-        } else {
-            enables.overlays.remove(.frameGuides)
-        }
-        enables.displays.formUnion([.lcd, .hdmi])
-        setOverlayEnables(enables)
-    }
-
-    func setSafeAreaPercentage(_ percentage: Int) {
-        var overlays = camera.overlays
-        overlays.safeAreaPercentage = Int8(clamping: percentage)
-        setOverlays(overlays)
-    }
-
-    func setOverlayEnables(_ enables: OverlayEnables) {
-        send { try CcuCommand.overlayEnables(enables) }
-        camera.overlayEnables = enables
-    }
-
-    func setExposureTools(_ tools: ExposureToolsState) {
-        send { try CcuCommand.exposureTools(tools) }
-        camera.exposureTools = tools
-    }
-
-    func toggleExposureTool(_ tool: ExposureToolsState.Tools) {
-        var state = camera.exposureTools
-        if state.tools.contains(tool) {
-            state.tools.remove(tool)
-        } else {
-            state.tools.insert(tool)
-        }
-        if state.displays.isEmpty {
-            state.displays = [.lcd, .hdmi]
-        }
-        setExposureTools(state)
-    }
-
-    func setZebraLevel(_ level: Double) {
-        send { try CcuCommand.zebraLevel(level) }
-        camera.zebraLevel = level
-    }
-
-    func setPeakingLevel(_ level: Double) {
-        send { try CcuCommand.peakingLevel(level) }
-        camera.peakingLevel = level
-    }
-
-    func setFocusAssist(_ style: FocusAssistStyle) {
-        send { try CcuCommand.focusAssist(style) }
-        camera.focusAssist = style
-    }
-
-    func setColorBars(seconds: Int) {
-        send { try CcuCommand.colorBars(seconds: Int8(clamping: seconds)) }
-        camera.colorBarsSeconds = Int8(clamping: seconds)
-    }
-
-    func setAudio(_ update: (inout AudioState) -> Void) {
-        var audio = camera.audio
-        update(&audio)
-
-        if audio.micLevel != camera.audio.micLevel, let value = audio.micLevel {
-            send { try CcuCommand.micLevel(value) }
-        }
-        if audio.headphoneLevel != camera.audio.headphoneLevel, let value = audio.headphoneLevel {
-            send { try CcuCommand.headphoneLevel(value) }
-        }
-        if audio.headphoneProgramMix != camera.audio.headphoneProgramMix, let value = audio.headphoneProgramMix {
-            send { try CcuCommand.headphoneProgramMix(value) }
-        }
-        if audio.speakerLevel != camera.audio.speakerLevel, let value = audio.speakerLevel {
-            send { try CcuCommand.speakerLevel(value) }
-        }
-        if audio.inputType != camera.audio.inputType, let value = audio.inputType {
-            send { try CcuCommand.audioInputType(value) }
-        }
-        if audio.inputLevelCh0 != camera.audio.inputLevelCh0 || audio.inputLevelCh1 != camera.audio.inputLevelCh1 {
-            send {
-                try CcuCommand.audioInputLevels(
-                    ch0: audio.inputLevelCh0 ?? 0,
-                    ch1: audio.inputLevelCh1 ?? 0
-                )
-            }
-        }
-        if audio.phantomPower != camera.audio.phantomPower, let value = audio.phantomPower {
-            send { try CcuCommand.phantomPower(value) }
-        }
-
-        camera.audio = audio
-    }
-
-    func setTallyBrightness(front: Double?, rear: Double?) {
-        if let front {
-            send { try CcuCommand.tallyFrontBrightness(front) }
-            camera.tallyFrontBrightness = front
-        }
-        if let rear {
-            send { try CcuCommand.tallyRearBrightness(rear) }
-            camera.tallyRearBrightness = rear
-        }
-    }
-
-    func setColorCorrection(_ update: (inout ColorCorrectionState) -> Void) {
-        var color = camera.colorCorrection
-        update(&color)
-
-        if color.lift != camera.colorCorrection.lift {
-            send { try CcuCommand.colorLift(color.lift) }
-        }
-        if color.gamma != camera.colorCorrection.gamma {
-            send { try CcuCommand.colorGamma(color.gamma) }
-        }
-        if color.gain != camera.colorCorrection.gain {
-            send { try CcuCommand.colorGain(color.gain) }
-        }
-        if color.offset != camera.colorCorrection.offset {
-            send { try CcuCommand.colorOffset(color.offset) }
-        }
-        if color.contrastPivot != camera.colorCorrection.contrastPivot
-            || color.contrastAdjust != camera.colorCorrection.contrastAdjust {
-            send { try CcuCommand.contrast(pivot: color.contrastPivot, adjust: color.contrastAdjust) }
-        }
-        if color.lumaMix != camera.colorCorrection.lumaMix {
-            send { try CcuCommand.lumaMix(color.lumaMix) }
-        }
-        if color.hue != camera.colorCorrection.hue || color.saturation != camera.colorCorrection.saturation {
-            send { try CcuCommand.colorAdjust(hue: color.hue, saturation: color.saturation) }
-        }
-
-        camera.colorCorrection = color
-    }
-
-    func resetColorCorrection() {
-        send { try CcuCommand.colorCorrectionReset() }
-        camera.colorCorrection = ColorCorrectionState()
-    }
-
-    func setTimecodeSource(clip: Bool) {
-        send { try CcuCommand.timecodeSource(clip: clip) }
-        camera.timecodeSourceClip = clip
-    }
-
-    func setReferenceSource(_ source: Int) {
-        send { try CcuCommand.referenceSource(Int8(clamping: source)) }
-        camera.referenceSource = Int8(clamping: source)
-    }
-
-    func syncCameraClock() {
-        send { try CcuCommand.realTimeClock(date: Date()) }
-        send { try CcuCommand.timezone(minutesFromUTC: Int32(TimeZone.current.secondsFromGMT() / 60)) }
-    }
-
-    func playbackClip(next: Bool) {
-        send { try CcuCommand.playbackClip(next: next) }
-    }
-
-    func startPlayback() {
-        send { try CcuCommand.transportMode(.play, speed: 1) }
-    }
-
-    func stopPlayback() {
-        send { try CcuCommand.transportMode(.preview) }
-    }
-
-    func powerOffCamera() {
-        do {
-            try write(Data([0x00]), to: BlackmagicBleConstants.cameraStatus)
-        } catch {
-            reportError(friendlyMessage(for: error))
-        }
-    }
-
-    func setCameraDisplayName(_ name: String) {
-        let trimmed = String(name.prefix(32))
-        guard let data = trimmed.data(using: .utf8) else { return }
-        do {
-            try write(data, to: BlackmagicBleConstants.deviceName)
-        } catch {
-            AppLog.ble.warning("Couldn't send iPad name to the camera: \(friendlyMessage(for: error))")
-        }
+    @discardableResult
+    func sendApplying(
+        _ packet: () throws -> BlackmagicCcuPacket,
+        mutate: (inout CameraState) -> Void
+    ) -> Bool {
+        guard send(packet) else { return false }
+        mutate(&camera)
+        return true
     }
 
     // MARK: - Connection internals
 
-    private func connect(peripheral target: CBPeripheral) {
+    func connect(peripheral target: CBPeripheral) {
         userInitiatedDisconnect = false
+        rediscoveringSavedCamera = false
         peripheral = target
         target.delegate = self
         connectedName = target.name ?? savedCameraName
@@ -604,8 +231,9 @@ final class CameraBleController: NSObject, ObservableObject {
         central.connect(target, options: nil)
     }
 
-    private func cancelConnection() {
+    func cancelConnection() {
         wantsScan = false
+        rediscoveringSavedCamera = false
         if central.state == .poweredOn {
             central.stopScan()
         }
@@ -618,7 +246,7 @@ final class CameraBleController: NSObject, ObservableObject {
         camera = CameraState()
     }
 
-    private func write(_ data: Data, to characteristicID: CBUUID) throws {
+    func write(_ data: Data, to characteristicID: CBUUID) throws {
         guard central.state == .poweredOn else { throw ControllerError.bluetoothUnavailable }
         guard let peripheral, peripheral.state == .connected else { throw ControllerError.notConnected }
         guard let characteristic = characteristics[characteristicID] else { throw ControllerError.notReady }
@@ -634,18 +262,19 @@ final class CameraBleController: NSObject, ObservableObject {
 
     /// Logs an error, records it in the history for diagnostics exports, and
     /// (optionally) surfaces it as the toast the UI shows.
-    private func reportError(_ message: String, category: AppLog.Category = AppLog.ble, toast: Bool = true) {
+    func reportError(_ message: String, category: AppLog.Category = AppLog.ble, toast: Bool = true) {
         category.error(message)
         errorHistory.append(LoggedError(message: message))
         if errorHistory.count > 50 {
             errorHistory.removeFirst(errorHistory.count - 50)
         }
         if toast {
+            errorToastID &+= 1
             lastError = message
         }
     }
 
-    private func friendlyMessage(for error: Error) -> String {
+    func friendlyMessage(for error: Error) -> String {
         switch error {
         case ControllerError.bluetoothUnavailable: return "Bluetooth is unavailable."
         case ControllerError.notConnected: return "Camera is not connected."
@@ -658,281 +287,5 @@ final class CameraBleController: NSObject, ObservableObject {
         case bluetoothUnavailable
         case notConnected
         case notReady
-    }
-
-    // MARK: - Delegate handlers (main actor)
-
-    fileprivate func handleCentralStateChange() {
-        switch central.state {
-        case .poweredOn:
-            if savedCameraID != nil {
-                connectToSavedCamera()
-            } else if wantsScan {
-                startScan()
-            } else {
-                phase = .idle
-            }
-        case .poweredOff:
-            phase = .bluetoothOff
-            peripheral = nil
-            characteristics = [:]
-        case .unauthorized:
-            phase = .bluetoothUnauthorized
-        default:
-            break
-        }
-    }
-
-    fileprivate func handleDiscovered(_ discovered: CBPeripheral, rssi: Int) {
-        let name = discovered.name ?? "Blackmagic Camera"
-        let entry = DiscoveredCamera(id: discovered.identifier, name: name, rssi: rssi)
-        if let index = discoveredCameras.firstIndex(where: { $0.id == entry.id }) {
-            discoveredCameras[index] = entry
-        } else {
-            discoveredCameras.append(entry)
-        }
-        discoveredCameras.sort { $0.rssi > $1.rssi }
-
-        // Auto-reconnect path: the saved camera reappeared while scanning.
-        if discovered.identifier == savedCameraID, peripheral == nil {
-            central.stopScan()
-            connect(peripheral: discovered)
-        }
-    }
-
-    fileprivate func handleConnected(_ connected: CBPeripheral) {
-        savedCameraID = connected.identifier
-        defaults.set(connected.name ?? "Blackmagic Camera", forKey: Self.savedNameKey)
-        connectedName = connected.name ?? "Blackmagic Camera"
-        phase = .pairing
-        connected.discoverServices([
-            BlackmagicBleConstants.cameraService,
-            BlackmagicBleConstants.deviceInformationService
-        ])
-    }
-
-    fileprivate func handleDisconnected(_ disconnected: CBPeripheral, error: Error?) {
-        guard disconnected.identifier == peripheral?.identifier else { return }
-        characteristics = [:]
-        camera = CameraState()
-
-        if userInitiatedDisconnect {
-            AppLog.ble.info("Disconnected at user request")
-            peripheral = nil
-            connectedName = nil
-            phase = .idle
-            return
-        }
-
-        // Unexpected drop: keep the peripheral and ask CoreBluetooth to
-        // reconnect. The request stays pending until the camera reappears.
-        if let error {
-            reportError("Camera connection lost (\(error.localizedDescription)). Reconnecting…")
-        } else {
-            AppLog.ble.warning("Camera connection lost without an error. Reconnecting…")
-        }
-        phase = .reconnecting
-        central.connect(disconnected, options: nil)
-    }
-
-    fileprivate func handleFailedToConnect(_ failed: CBPeripheral, error: Error?) {
-        guard failed.identifier == peripheral?.identifier else { return }
-        reportError(error?.localizedDescription ?? "Failed to connect to the camera.")
-        phase = .reconnecting
-        central.connect(failed, options: nil)
-    }
-
-    fileprivate func handleServicesDiscovered(_ serviced: CBPeripheral, error: Error?) {
-        guard error == nil, let services = serviced.services else {
-            if let error {
-                reportError("Service discovery failed: \(error.localizedDescription)")
-            }
-            return
-        }
-        for service in services {
-            serviced.discoverCharacteristics(nil, for: service)
-        }
-    }
-
-    fileprivate func handleCharacteristicsDiscovered(_ discovered: CBPeripheral, service: CBService, error: Error?) {
-        guard error == nil, let found = service.characteristics else {
-            if let error {
-                reportError("Characteristic discovery failed: \(error.localizedDescription)")
-            }
-            return
-        }
-
-        for characteristic in found {
-            characteristics[characteristic.uuid] = characteristic
-
-            switch characteristic.uuid {
-            case BlackmagicBleConstants.modelCharacteristic,
-                 BlackmagicBleConstants.protocolVersion:
-                discovered.readValue(for: characteristic)
-            case BlackmagicBleConstants.incomingCameraControl,
-                 BlackmagicBleConstants.timecode,
-                 BlackmagicBleConstants.cameraStatus:
-                // Subscribing to an encrypted characteristic initiates
-                // bonding — iOS shows the PIN entry dialog and the camera
-                // displays its 6-digit code.
-                discovered.setNotifyValue(true, for: characteristic)
-            default:
-                break
-            }
-        }
-
-        if service.uuid == BlackmagicBleConstants.cameraService {
-            // Tell the camera who we are (shows in its Bluetooth menu) and
-            // make sure it is awake.
-            setCameraDisplayName(UIDevice.current.name)
-            do {
-                try write(Data([0x01]), to: BlackmagicBleConstants.cameraStatus)
-            } catch {
-                AppLog.ble.warning("Couldn't send wake command: \(friendlyMessage(for: error))")
-            }
-        }
-    }
-
-    fileprivate func handleNotificationStateUpdate(_ characteristic: CBCharacteristic, error: Error?) {
-        if let error {
-            let code = (error as NSError).code
-            if code == CBATTError.insufficientEncryption.rawValue
-                || code == CBATTError.insufficientAuthentication.rawValue {
-                reportError("Pairing failed. Re-enable Bluetooth on the camera and enter the PIN it displays.")
-            } else {
-                reportError(error.localizedDescription)
-            }
-            return
-        }
-
-        // A successful subscription to an encrypted characteristic means
-        // bonding completed.
-        if characteristic.uuid == BlackmagicBleConstants.incomingCameraControl, phase != .connected {
-            phase = .connected
-        }
-    }
-
-    fileprivate func handleValueUpdate(_ characteristic: CBCharacteristic, error: Error?) {
-        if let error {
-            // Logged and kept in history, but not toasted: value updates can
-            // arrive many times per second and would spam the UI.
-            reportError("Camera data error: \(error.localizedDescription)", toast: false)
-            return
-        }
-        guard let data = characteristic.value else { return }
-
-        switch characteristic.uuid {
-        case BlackmagicBleConstants.incomingCameraControl:
-            let messages = BlackmagicCcuPacket.parseMessages(from: data)
-            var updated = camera
-            CameraStateDecoder.apply(messages, to: &updated)
-            camera = updated
-            if phase != .connected {
-                phase = .connected
-            }
-            if let pending = pendingRecordRequest, camera.isRecording == pending {
-                pendingRecordRequest = nil
-                recordConfirmationTask?.cancel()
-            }
-
-        case BlackmagicBleConstants.timecode:
-            camera.timecode = BlackmagicCcuPacket.timecodeString(from: data)
-
-        case BlackmagicBleConstants.cameraStatus:
-            if let flags = data.first {
-                camera.statusFlags = CameraStatusFlags(rawValue: flags)
-            }
-
-        case BlackmagicBleConstants.modelCharacteristic:
-            camera.modelName = String(data: data, encoding: .utf8)
-
-        case BlackmagicBleConstants.protocolVersion:
-            camera.protocolVersion = String(data: data, encoding: .utf8)
-
-        default:
-            break
-        }
-    }
-
-    fileprivate func handleWriteResult(_ characteristic: CBCharacteristic, error: Error?) {
-        guard let error else { return }
-        reportError("The camera rejected a command: \(error.localizedDescription)", category: AppLog.ccu)
-    }
-}
-
-// MARK: - CoreBluetooth delegates
-// The central manager runs on the main queue, so delegate callbacks can
-// safely assume main-actor isolation.
-
-extension CameraBleController: CBCentralManagerDelegate {
-    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        MainActor.assumeIsolated { handleCentralStateChange() }
-    }
-
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didDiscover peripheral: CBPeripheral,
-        advertisementData: [String: Any],
-        rssi RSSI: NSNumber
-    ) {
-        MainActor.assumeIsolated { handleDiscovered(peripheral, rssi: RSSI.intValue) }
-    }
-
-    nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        MainActor.assumeIsolated { handleConnected(peripheral) }
-    }
-
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didFailToConnect peripheral: CBPeripheral,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleFailedToConnect(peripheral, error: error) }
-    }
-
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didDisconnectPeripheral peripheral: CBPeripheral,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleDisconnected(peripheral, error: error) }
-    }
-}
-
-extension CameraBleController: CBPeripheralDelegate {
-    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        MainActor.assumeIsolated { handleServicesDiscovered(peripheral, error: error) }
-    }
-
-    nonisolated func peripheral(
-        _ peripheral: CBPeripheral,
-        didDiscoverCharacteristicsFor service: CBService,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleCharacteristicsDiscovered(peripheral, service: service, error: error) }
-    }
-
-    nonisolated func peripheral(
-        _ peripheral: CBPeripheral,
-        didUpdateNotificationStateFor characteristic: CBCharacteristic,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleNotificationStateUpdate(characteristic, error: error) }
-    }
-
-    nonisolated func peripheral(
-        _ peripheral: CBPeripheral,
-        didUpdateValueFor characteristic: CBCharacteristic,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleValueUpdate(characteristic, error: error) }
-    }
-
-    nonisolated func peripheral(
-        _ peripheral: CBPeripheral,
-        didWriteValueFor characteristic: CBCharacteristic,
-        error: Error?
-    ) {
-        MainActor.assumeIsolated { handleWriteResult(characteristic, error: error) }
     }
 }

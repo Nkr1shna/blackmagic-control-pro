@@ -189,20 +189,22 @@ final class ExternalCameraPreviewModel: NSObject, ObservableObject {
         let url = Self.recordingsDirectory().appendingPathComponent(Self.recordingFileName())
         let session = session
         let movieOutput = movieOutput
-        let needsAudio = audioGranted && !hasAudioInput
-        let willRecordAudio = audioGranted
-        if needsAudio {
-            hasAudioInput = true
-        }
+        let alreadyHasAudioInput = hasAudioInput
+        let needsAudio = audioGranted && !alreadyHasAudioInput
 
         localRecordingMessage = nil
         sessionQueue.async { [weak self] in
+            var willRecordAudio = audioGranted && alreadyHasAudioInput
             if needsAudio,
                let audioDevice = AVCaptureDevice.default(for: .audio),
                let audioInput = try? AVCaptureDeviceInput(device: audioDevice) {
                 session.beginConfiguration()
                 if session.canAddInput(audioInput) {
                     session.addInput(audioInput)
+                    willRecordAudio = true
+                    Task { @MainActor [weak self] in
+                        self?.hasAudioInput = true
+                    }
                 }
                 session.commitConfiguration()
             }

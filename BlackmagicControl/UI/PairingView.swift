@@ -112,10 +112,10 @@ struct PairingView: View {
             }
 
             if let model = controller.camera.modelName {
-                infoRow("Model", model)
+                HUDInfoRow(title: "Model", value: model)
             }
             if let version = controller.camera.protocolVersion {
-                infoRow("Protocol", version)
+                HUDInfoRow(title: "Protocol", value: version)
             }
 
             HStack(spacing: 10) {
@@ -320,18 +320,4 @@ struct PairingView: View {
         .background(HUD.panelBackground, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func infoRow(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title.uppercased())
-                .font(HUD.labelFont())
-                .foregroundStyle(HUD.label)
-                .tracking(1)
-
-            Spacer()
-
-            Text(value)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(HUD.value)
-        }
-    }
 }

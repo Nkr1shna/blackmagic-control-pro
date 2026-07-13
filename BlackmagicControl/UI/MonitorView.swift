@@ -155,11 +155,10 @@ struct MonitorView: View {
                 showPairing = true
             }
         }
-        .onChange(of: controller.lastError) { _, newValue in
-            guard newValue != nil else { return }
+        .onChange(of: controller.errorToastID) { _, token in
             Task {
                 try? await Task.sleep(for: .seconds(6))
-                if controller.lastError == newValue {
+                if controller.errorToastID == token {
                     controller.lastError = nil
                 }
             }
